@@ -819,8 +819,12 @@ app.post('/api/click', async (req, res) => {
     return res.json({ ok: false, error: 'click failed' });
   }
   // Wait for the bot's response and route it back to this visitor.
+  // Tag it with the bot's proper username (original case) so the page's
+  // per-bot filter (m.bot === selectedBot) matches it.
+  const botEntry = findBotByUsername(botKey);
+  const botTag = botEntry ? botEntry.username : botKey;
   waitForBotReply(sid, botKey).then((reply) => {
-    if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, botKey, reply.tgMsgId || null));
+    if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, botTag, reply.tgMsgId || null));
   }).catch(() => { /* ignore — no canned fallback */ });
   return res.json({ ok: true, clicked: true });
 });
