@@ -117,7 +117,7 @@
           chip.type = 'button';
           chip.addEventListener('click', function () {
             if (btn.url) { window.open(btn.url, '_blank'); return; }
-            clickButton(r, c, btn.text);
+            clickButton(r, c, btn.text, m.tgMsgId);
           });
           browEl.appendChild(chip);
         });
@@ -181,16 +181,18 @@
       })
       .catch(function () { addSys('Network error. Please try again.'); });
   }
-  function clickButton(row, col, text) {
+  function clickButton(row, col, text, tgMsgId) {
     // The bot the visitor picked on the MLA Bot page (shared localStorage).
     var bot = '';
     try { bot = localStorage.getItem('mla_chat_bot') || ''; } catch (e) {}
     if (!bot) { addSys('প্রথমে MLA Bot পেজ থেকে একটি বট বেছে নিন।'); return; }
     addSys('👆 ' + text);
+    var body = { session_id: sessionId, bot: bot, row: row, col: col };
+    if (tgMsgId) body.tgMsgId = tgMsgId;
     fetch(API_URL + '/click', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, bot: bot, row: row, col: col })
+      body: JSON.stringify(body)
     })
       .then(function (r) { return r.json(); })
       .then(function (d) {

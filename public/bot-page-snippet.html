@@ -10,7 +10,7 @@
     <div style="width:42px;height:42px;border-radius:50%;background:#0088cc;color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;">🤖</div>
     <div>
       <div id="mla-bot-title" style="font-weight:700;font-size:16px;">MLA Bot</div>
-      <div id="mla-bot-sub" style="font-size:12px;color:#6b7280;">বট বেছে নিন • v6</div>
+      <div id="mla-bot-sub" style="font-size:12px;color:#6b7280;">বট বেছে নিন • v7</div>
     </div>
   </div>
   <div id="mla-bot-picker" style="display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid #e5e7eb;overflow-x:auto;"></div>
@@ -93,12 +93,12 @@
     // Rendered as tappable buttons under the bot's message. Tapping sends
     // the callback to the bot via /api/click — the bot's real answer comes
     // back as a new message.
-    if (m.buttons && m.from === 'bot') renderButtons(row, m.buttons);
+    if (m.buttons && m.from === 'bot') renderButtons(row, m.buttons, m.tgMsgId);
     list.appendChild(row);
     scrollBottom();
   }
   // Render a bot message's inline keyboard as tappable buttons.
-  function renderButtons(rowEl, buttons) {
+  function renderButtons(rowEl, buttons, tgMsgId) {
     buttons.forEach(function (brow, r) {
       var browEl = document.createElement('div');
       browEl.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;max-width:90%;';
@@ -109,7 +109,7 @@
         chip.style.cssText = 'padding:8px 14px;border-radius:999px;font-size:14px;cursor:pointer;border:1px solid #0088cc;background:#fff;color:#0088cc;';
         chip.addEventListener('click', function () {
           if (btn.url) { window.open(btn.url, '_blank'); return; }
-          clickButton(r, c, btn.text);
+          clickButton(r, c, btn.text, tgMsgId);
         });
         browEl.appendChild(chip);
       });
@@ -118,13 +118,17 @@
   }
   // The visitor tapped one of the bot's inline buttons. Send the tap to the
   // server, which clicks it on the real Telegram message (callback to the bot).
-  function clickButton(row, col, text) {
+  // tgMsgId identifies the exact Telegram message, so the tap works even on
+  // an older message or after a server restart.
+  function clickButton(row, col, text, tgMsgId) {
     if (!selectedBot) return;
     addSys('👆 ' + text);
+    var body = { session_id: sessionId, bot: selectedBot, row: row, col: col };
+    if (tgMsgId) body.tgMsgId = tgMsgId;
     fetch(API_URL + '/click', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, bot: selectedBot, row: row, col: col })
+      body: JSON.stringify(body)
     })
       .then(function (r) { return r.json(); })
       .then(function (d) {
@@ -197,7 +201,7 @@
     var b = bots.find(function (x) { return x.username === username; });
     if (b) {
       titleEl.textContent = b.name || b.username;
-      subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v6';
+      subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v7';
       addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
     }
     renderPicker();
@@ -207,26 +211,31 @@
   // ---- Bot commands: the selected bot's REAL command list, auto-shown as
   // tappable chips under the picker (like Telegram's command menu). Tapping
   // a command sends it to the bot. Falls back to /start when the bot has no
-  // registered commands.
+  // registered commands OR the fetch fails — so a command chip is ALWAYS
+  // visible from the start.
+  function renderCommandChips(cmds) {
+    cmdsEl.innerHTML = '';
+    if (!cmds.length) cmds = [{ command: 'start', description: '' }];
+    cmds.forEach(function (c) {
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.textContent = '/' + c.command + (c.description ? ' — ' + c.description : '');
+      chip.title = c.description || ('/' + c.command);
+      chip.style.cssText = 'flex:0 0 auto;padding:7px 12px;border-radius:999px;font-size:13px;cursor:pointer;border:1px solid #d1d5db;background:#f3f4f6;color:#111827;';
+      chip.addEventListener('click', function () { send('/' + c.command); });
+      cmdsEl.appendChild(chip);
+    });
+  }
   function fetchCommands(username) {
     cmdsEl.innerHTML = '';
-    if (!username) return;
+    if (!username) { renderCommandChips([]); return; }
     fetch(API_URL + '/bots/' + encodeURIComponent(username) + '/commands')
       .then(function (r) { return r.json(); })
       .then(function (d) {
         var cmds = (d && d.ok && Array.isArray(d.commands)) ? d.commands : [];
-        if (!cmds.length) cmds = [{ command: 'start', description: '' }];
-        cmds.forEach(function (c) {
-          var chip = document.createElement('button');
-          chip.type = 'button';
-          chip.textContent = '/' + c.command + (c.description ? ' — ' + c.description : '');
-          chip.title = c.description || ('/' + c.command);
-          chip.style.cssText = 'flex:0 0 auto;padding:7px 12px;border-radius:999px;font-size:13px;cursor:pointer;border:1px solid #d1d5db;background:#f3f4f6;color:#111827;';
-          chip.addEventListener('click', function () { send('/' + c.command); });
-          cmdsEl.appendChild(chip);
-        });
+        renderCommandChips(cmds);
       })
-      .catch(function () {});
+      .catch(function () { renderCommandChips([]); }); // fetch failed — still show /start
   }
   function fetchBots() {
     fetch(API_URL + '/bots')
@@ -241,7 +250,7 @@
           }
           if (selectedBot) {
             var b = bots.find(function (x) { return x.username === selectedBot; });
-            if (b) { titleEl.textContent = b.name || b.username; subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v6'; }
+            if (b) { titleEl.textContent = b.name || b.username; subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v7'; }
             fetchCommands(selectedBot);
           }
           renderPicker();
