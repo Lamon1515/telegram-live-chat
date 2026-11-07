@@ -6,6 +6,7 @@
 const express = require('express');
 const http = require('http');
 const crypto = require('crypto');
+const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 require('dotenv').config();
@@ -15,6 +16,9 @@ const OWNER_CHAT_ID = Number(process.env.OWNER_CHAT_ID || 0);
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 const PORT = Number(process.env.PORT || 3000);
+// Secret for the WordPress admin panel's bot sync (POST /api/admin/bots/sync).
+// Only the wp-admin "MLA Bots" page knows it — it is never on a user page.
+const ADMIN_BOTS_SECRET = process.env.ADMIN_BOTS_SECRET || '';
 
 // GramJS userbot bridge (OPTIONAL — for operating income bots). The userbot
 // logs in as YOUR Telegram account. All three must be set, or the bridge
@@ -28,16 +32,42 @@ const IP_LIMIT = 30; // max /api/send calls per minute per IP
 const HISTORY_MAX = 200; // max stored messages per session
 
 // ---------- Connected Telegram bots (income bots) ----------
-// Registry of other Telegram bots the site connects to. Add a bot by appending
-// an entry to bots.json: { username, name, description, how_to_earn }.
-// The server serves them at GET /api/bots and answers visitors with the
-// matching bot's real info + t.me link (real-time bot answer).
+// Registry of other Telegram bots the site connects to. Each entry:
+// { username, name, description, how_to_earn }.
+// The list is managed from the WordPress ADMIN panel only ("MLA Bots" page in
+// wp-admin — never a user page). The admin page saves the list in WordPress
+// and pushes it here via POST /api/admin/bots/sync. The server keeps the
+// synced list in bots-runtime.json so it survives a process restart; on a
+// fresh deploy it falls back to bots.json from the repo. The admin page also
+// re-pushes the list whenever it is opened, so a redeploy self-heals.
+const RUNTIME_BOTS_FILE = path.join(__dirname, 'bots-runtime.json');
 let connectedBots = [];
 try {
   const botsData = require('./bots.json');
   if (botsData && Array.isArray(botsData.bots)) connectedBots = botsData.bots;
 } catch (e) {
   console.warn('[bots] bots.json not found or invalid — starting with no connected bots.');
+}
+try {
+  if (fs.existsSync(RUNTIME_BOTS_FILE)) {
+    const runtimeData = JSON.parse(fs.readFileSync(RUNTIME_BOTS_FILE, 'utf8'));
+    if (runtimeData && Array.isArray(runtimeData.bots)) {
+      connectedBots = runtimeData.bots;
+      console.log(`[bots] loaded ${connectedBots.length} bot(s) from bots-runtime.json (synced from wp-admin).`);
+    }
+  }
+} catch (e) {
+  console.warn('[bots] bots-runtime.json unreadable — using bots.json.');
+}
+
+// Persist the synced bot list to disk (best-effort; survives a process
+// restart within the same deploy). Never logs the list contents.
+function saveRuntimeBots() {
+  try {
+    fs.writeFileSync(RUNTIME_BOTS_FILE, JSON.stringify({ bots: connectedBots }, null, 2));
+  } catch (e) {
+    console.warn('[bots] could not write bots-runtime.json:', e && e.message ? e.message : e);
+  }
 }
 
 if (!BOT_TOKEN) console.warn('[warn] BOT_TOKEN is not set. Copy .env.example to .env and fill it in.');
@@ -576,6 +606,35 @@ app.get('/api/history', (req, res) => {
 // GET /api/bots — list of connected Telegram bots (income bots).
 app.get('/api/bots', (req, res) => {
   res.json({ ok: true, bots: connectedBots });
+});
+
+// POST /api/admin/bots/sync — replace the connected-bot list (WordPress ADMIN
+// panel only). Body: { bots: [{ username, name, description, how_to_earn }],
+// secret }. The secret (ADMIN_BOTS_SECRET) lives only in the wp-admin page
+// and in Render env vars — it is NEVER on a user-facing page. The list is
+// kept in memory and persisted to bots-runtime.json. Returns the bot count.
+app.post('/api/admin/bots/sync', (req, res) => {
+  if (!ADMIN_BOTS_SECRET || String((req.body && req.body.secret) || '') !== ADMIN_BOTS_SECRET) {
+    return res.status(403).json({ ok: false, error: 'forbidden' });
+  }
+  const bots = req.body && req.body.bots;
+  if (!Array.isArray(bots)) return res.status(400).json({ ok: false, error: 'bots must be an array' });
+  const clean = [];
+  for (const b of bots.slice(0, 100)) {
+    if (!b || typeof b !== 'object') continue;
+    const username = String(b.username || '').trim().replace(/^@/, '');
+    if (!/^[A-Za-z0-9_]{5,32}$/.test(username)) continue; // must be a valid bot username
+    clean.push({
+      username,
+      name: String(b.name || username).slice(0, 100),
+      description: String(b.description || '').slice(0, 500),
+      how_to_earn: String(b.how_to_earn || '').slice(0, 500),
+    });
+  }
+  connectedBots = clean;
+  saveRuntimeBots();
+  console.log(`[bots] synced ${connectedBots.length} bot(s) from wp-admin.`);
+  return res.json({ ok: true, count: connectedBots.length });
 });
 
 // ---------- Telegram webhook (Telegram -> us) ----------
