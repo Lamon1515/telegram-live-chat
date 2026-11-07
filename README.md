@@ -90,6 +90,28 @@ Render free ১৫ মিনিট idle থাকলে ঘুমিয়ে �
 
 - ভিজিটরের মেসেজে **Reply** (swipe/long-press → Reply) করে উত্তর লেখো — সবচেয়ে সহজ।
 - অথবা লেখো: `/reply v_abc123... তোমার উত্তর` (session id মেসেজের `[ ]`-এর ভেতরে থাকে)।
+- Plain মেসেজ (Reply ছাড়া) লিখলে সবচেয়ে recent active ভিজিটরের কাছে যাবে — একাধিক active ভিজিটর থাকলে বট `/reply` দিয়ে বেছে নিতে বলবে। `/list` লিখলে active ভিজিটরদের লিস্ট দেখাবে।
+
+## Connected bots — অন্য টেলিগ্রাম বট যুক্ত করা (ইনকাম বট)
+
+তোমার বট অন্য টেলিগ্রাম বটের আসল উত্তর ভিজিটরকে real-time-এ দিতে পারে। বট যুক্ত করতে `bots.json`-এ একটা entry যোগ করো, তারপর redeploy করো:
+
+```json
+{
+  "bots": [
+    {
+      "username": "SomeEarnBot",
+      "name": "Some Earn Bot",
+      "description": "টাস্ক করে আয় করার বট।",
+      "how_to_earn": "বটটি খুলে /start দিন, টাস্ক করুন।"
+    }
+  ]
+}
+```
+
+- ভিজিটর "বট", "ইনকাম", "earn" বা কোনো বটের নাম/username লিখলেই সার্ভার ওই বটের আসল তথ্য + `t.me/username` লিংক instant reply দেবে (ম্যানুয়াল reply লাগে না)।
+- যুক্ত বটগুলোর লিস্ট দেখা যায়: `GET /api/bots` → `{"ok":true,"bots":[...]}` — সাইটে বটের directory বানাতে এই API ব্যবহার করা যায়।
+- নতুন বট যুক্ত করতে শুধু `bots.json`-এ entry যোগ করে GitHub-এ push করলেই হবে (Render auto/manual deploy)।
 
 ## সত্যি কথাগুলো (জেনে রাখো)
 

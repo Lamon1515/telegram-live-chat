@@ -20,6 +20,19 @@ const SEND_LIMIT = 10; // max visitor messages per minute per session
 const IP_LIMIT = 30; // max /api/send calls per minute per IP
 const HISTORY_MAX = 200; // max stored messages per session
 
+// ---------- Connected Telegram bots (income bots) ----------
+// Registry of other Telegram bots the site connects to. Add a bot by appending
+// an entry to bots.json: { username, name, description, how_to_earn }.
+// The server serves them at GET /api/bots and answers visitors with the
+// matching bot's real info + t.me link (real-time bot answer).
+let connectedBots = [];
+try {
+  const botsData = require('./bots.json');
+  if (botsData && Array.isArray(botsData.bots)) connectedBots = botsData.bots;
+} catch (e) {
+  console.warn('[bots] bots.json not found or invalid — starting with no connected bots.');
+}
+
 if (!BOT_TOKEN) console.warn('[warn] BOT_TOKEN is not set. Copy .env.example to .env and fill it in.');
 if (!OWNER_CHAT_ID) console.warn('[warn] OWNER_CHAT_ID is not set. Copy .env.example to .env and fill it in.');
 
@@ -238,6 +251,28 @@ async function drainMissedUpdates() {
   } catch (e) { console.error('[webhook]', e.message); }
 }
 
+// ---------- Connected-bot answers (real-time, no manual reply) ----------
+// Find a connected bot's real answer for a visitor message.
+// Returns the reply text, or null when nothing matches / no bots connected.
+function findBotAnswer(text) {
+  if (!connectedBots.length) return null;
+  const q = String(text || '').toLowerCase();
+  const wantsBot = /bot|বট|earn|income|ইনকাম|টেলিগ্রাম বট/.test(q);
+  // A specific bot mentioned by username or name.
+  const named = connectedBots.find((b) => {
+    const u = String(b.username || '').toLowerCase().replace(/^@/, '');
+    const n = String(b.name || '').toLowerCase();
+    return (u && q.includes(u)) || (n && q.includes(n));
+  });
+  const list = named ? [named] : (wantsBot ? connectedBots : []);
+  if (!list.length) return null;
+  const lines = list.map((b) => {
+    const url = `https://t.me/${String(b.username || '').replace(/^@/, '')}`;
+    return `🤖 ${b.name || b.username}\n${b.description || ''}\nকিভাবে আয়: ${b.how_to_earn || 'বটটি খুলে নির্দেশনা অনুসরণ করুন'}\nখুলুন: ${url}`;
+  });
+  return `এই বটগুলো থেকে ইনকাম করতে পারবেন:\n\n${lines.join('\n\n')}`;
+}
+
 // ---------- REST API (website -> Telegram) ----------
 // POST /api/send { session_id?, text } — forwards a visitor message to the owner.
 app.post('/api/send', async (req, res) => {
@@ -257,6 +292,10 @@ app.post('/api/send', async (req, res) => {
   s.messages.push(newMsg(s, 'visitor', text));
   s.lastSeen = now;
   lastActiveSessionId = sid;
+  // If the visitor asked about a connected bot, answer instantly with that
+  // bot's real info + link (real-time bot answer, no manual reply needed).
+  const botAnswer = findBotAnswer(text);
+  if (botAnswer) pushToVisitor(sid, newMsg(s, 'owner', botAnswer));
   try {
     const r = await tg('sendMessage', { chat_id: OWNER_CHAT_ID, text: `💬 [${sid}] New website message:\n${text}` });
     return res.json({ ok: true, session_id: sid, tg_ok: !!r.ok });
@@ -271,6 +310,11 @@ app.get('/api/history', (req, res) => {
   if (!/^[A-Za-z0-9_\-]{6,32}$/.test(sid)) return res.status(400).json({ ok: false, error: 'bad session' });
   const s = sessions.get(sid);
   res.json({ ok: true, messages: s ? s.messages : [] });
+});
+
+// GET /api/bots — list of connected Telegram bots (income bots).
+app.get('/api/bots', (req, res) => {
+  res.json({ ok: true, bots: connectedBots });
 });
 
 // ---------- Telegram webhook (Telegram -> us) ----------
