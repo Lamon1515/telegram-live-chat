@@ -1,0 +1,59 @@
+/* MLA Live Chat widget — slim, minimal, mobile-first */
+.mla-chat-btn {
+  position: fixed; right: 18px; bottom: 18px; z-index: 9999;
+  width: 56px; height: 56px; border-radius: 50%; border: none; cursor: pointer;
+  background: #0088cc; color: #fff; font-size: 24px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .25);
+  display: flex; align-items: center; justify-content: center;
+}
+.mla-chat-btn-icon { line-height: 1; }
+.mla-chat-badge {
+  position: absolute; top: -4px; right: -4px; min-width: 20px; height: 20px;
+  padding: 0 5px; border-radius: 10px; background: #e0245e; color: #fff;
+  font-size: 12px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.mla-chat-panel {
+  position: fixed; right: 18px; bottom: 86px; z-index: 9999;
+  width: 360px; max-width: calc(100vw - 36px);
+  height: 520px; max-height: calc(100vh - 120px);
+  background: #fff; border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .25);
+  display: flex; flex-direction: column; overflow: hidden;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+.mla-chat-head { background: #0088cc; color: #fff; padding: 14px 16px; position: relative; }
+.mla-chat-title { font-size: 16px; font-weight: 700; }
+.mla-chat-sub { font-size: 12px; opacity: .85; margin-top: 2px; }
+.mla-chat-close {
+  position: absolute; top: 10px; right: 12px;
+  background: transparent; border: none; color: #fff; font-size: 16px; cursor: pointer;
+}
+.mla-chat-list {
+  flex: 1; overflow-y: auto; padding: 14px; background: #f5f7fa;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.mla-chat-row { display: flex; }
+.mla-chat-row-visitor { justify-content: flex-end; }
+.mla-chat-row-owner { justify-content: flex-start; }
+.mla-chat-row-sys { justify-content: center; }
+.mla-chat-bubble {
+  max-width: 78%; padding: 9px 12px; border-radius: 14px;
+  font-size: 14px; line-height: 1.45; white-space: pre-wrap; word-break: break-word;
+}
+.mla-chat-row-visitor .mla-chat-bubble { background: #0088cc; color: #fff; border-bottom-right-radius: 4px; }
+.mla-chat-row-owner .mla-chat-bubble { background: #fff; color: #222; border: 1px solid #e5e9f0; border-bottom-left-radius: 4px; }
+.mla-chat-row-sys .mla-chat-bubble { background: transparent; color: #888; font-size: 12px; max-width: 90%; text-align: center; }
+.mla-chat-form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid #e5e9f0; background: #fff; }
+.mla-chat-input {
+  flex: 1; border: 1px solid #dfe5ee; border-radius: 20px;
+  padding: 10px 14px; font-size: 14px; outline: none;
+}
+.mla-chat-input:focus { border-color: #0088cc; }
+.mla-chat-send {
+  width: 42px; height: 42px; border-radius: 50%; border: none;
+  background: #0088cc; color: #fff; font-size: 16px; cursor: pointer; flex-shrink: 0;
+}
+@media (max-width: 480px) {
+  .mla-chat-panel { right: 12px; left: 12px; bottom: 86px; width: auto; height: 68vh; }
+}
