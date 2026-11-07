@@ -127,10 +127,11 @@ function getSession(sid) {
   return sessions.get(sid);
 }
 
-function newMsg(session, from, text, buttons, bot) {
+function newMsg(session, from, text, buttons, bot, tgMsgId) {
   const m = { id: session.nextId++, from, text, time: Date.now() };
   if (buttons) m.buttons = buttons; // inline keyboard rows: [[{text, url?}, ...], ...]
   if (bot) m.bot = bot; // which bot this message belongs to (per-bot separate chats)
+  if (tgMsgId) m.tgMsgId = tgMsgId; // the real Telegram message id (for clicking its buttons later)
   return m;
 }
 
@@ -402,9 +403,10 @@ async function onUserbotMessage(event) {
     // tappable buttons, and remember this message so a tap can click the
     // button on the real Telegram message (sending the callback to the bot).
     const buttons = extractInlineButtons(msg);
-    botReplyMsgBySession.set(pending.sessionId, { msg, botKey, buttons, time: Date.now() });
+    const tgMsgId = (msg && msg.id !== undefined && msg.id !== null) ? Number(msg.id) : null;
+    botReplyMsgBySession.set(pending.sessionId, { msg, botKey, buttons, tgMsgId, time: Date.now() });
     console.log(`[userbot] reply from @${botKey} matched session ${pending.sessionId} — routing to visitor.${buttons ? ` (${buttons.length} button row(s))` : ''}`);
-    pending.resolve({ text, buttons });
+    pending.resolve({ text, buttons, tgMsgId });
     processBotQueue(botKey);
   } catch (e) {
     console.error('[userbot] event handler error:', e && e.message ? e.message : e);
@@ -695,7 +697,7 @@ app.post('/api/send', async (req, res) => {
     // When it was only named in the text, strip the name out first.
     const cleanText = pickedBot ? text : extractBotCommand(text, namedBot);
     sendToIncomeBot(sid, namedBot.username, cleanText).then((reply) => {
-      if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, namedBot.username));
+      if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, namedBot.username, reply.tgMsgId || null));
       // No reply in time / send failed: send nothing (no canned fallback).
     }).catch(() => { /* ignore — no canned fallback */ });
     return res.json({ ok: true, session_id: sid, tg_ok: true, bot_routed: true });
@@ -760,39 +762,65 @@ app.get('/api/bots/:username/commands', async (req, res) => {
   }
 });
 
-// POST /api/click { session_id, bot, row, col } — the visitor TAPPED one of
-// the bot's inline buttons on the site. The userbot clicks that button on
-// the real Telegram message (sending the callback to the bot), then the
+// POST /api/click { session_id, bot, row, col, tgMsgId? } — the visitor TAPPED
+// one of the bot's inline buttons on the site. The userbot clicks that button
+// on the real Telegram message (sending the callback to the bot), then the
 // bot's response is routed back to this visitor (from:'bot') when it arrives.
+// The button is clicked on the message identified by tgMsgId (the real
+// Telegram message id, sent with the reply) — re-fetched fresh via
+// getMessages, so the tap works even after a server restart or on an older
+// message. Falls back to the in-memory stored message when tgMsgId is absent.
 app.post('/api/click', async (req, res) => {
   const sid = String((req.body && req.body.session_id) || '').trim();
   const botKey = String((req.body && req.body.bot) || '').toLowerCase().replace(/^@/, '');
   const row = parseInt(req.body && req.body.row, 10);
   const col = parseInt(req.body && req.body.col, 10);
+  const tgMsgId = parseInt(req.body && req.body.tgMsgId, 10);
   if (!/^[A-Za-z0-9_\-]{6,32}$/.test(sid) || !botKey || Number.isNaN(row) || Number.isNaN(col)) {
     return res.status(400).json({ ok: false, error: 'bad request' });
   }
   if (!userbotClient || !userbotReady) return res.json({ ok: false, error: 'bridge off' });
+  // Find the button's label (for the log + URL buttons) from the stored reply.
   const stored = botReplyMsgBySession.get(sid);
-  if (!stored || stored.botKey !== botKey || !stored.msg || !stored.buttons) {
-    return res.json({ ok: false, error: 'no button message' });
+  let btn = null;
+  if (stored && stored.buttons && stored.buttons[row] && stored.buttons[row][col]) {
+    btn = stored.buttons[row][col];
   }
-  if (!stored.buttons[row] || !stored.buttons[row][col]) {
+  if (btn && btn.url) return res.json({ ok: true, url: btn.url }); // URL button — the site opens the link
+  // Resolve the message to click: prefer the real Telegram message (by id),
+  // re-fetched fresh so it works after restarts and on older messages.
+  let targetMsg = null;
+  if (!Number.isNaN(tgMsgId) && tgMsgId) {
+    try {
+      const peer = await userbotClient.getInputEntity(botKey);
+      const msgs = await userbotClient.getMessages(peer, { ids: [tgMsgId] });
+      if (msgs && msgs[0]) targetMsg = msgs[0];
+    } catch (e) {
+      console.error('[userbot] getMessages for click failed:', e && e.message ? e.message : e);
+    }
+  }
+  if (!targetMsg && stored && stored.msg && stored.botKey === botKey) targetMsg = stored.msg;
+  if (!targetMsg) return res.json({ ok: false, error: 'no button message' });
+  // Validate the button exists on the message we are about to click.
+  const liveButtons = extractInlineButtons(targetMsg);
+  if (!liveButtons || !liveButtons[row] || !liveButtons[row][col]) {
     return res.json({ ok: false, error: 'bad button' });
   }
-  const btn = stored.buttons[row][col];
-  if (btn.url) return res.json({ ok: true, url: btn.url }); // URL button — the site opens the link
+  const label = (liveButtons[row][col] && liveButtons[row][col].text) || (btn && btn.text) || '';
+  if (liveButtons[row][col] && liveButtons[row][col].url) {
+    return res.json({ ok: true, url: liveButtons[row][col].url });
+  }
   try {
     // Click the button on the real message (sends the callback to the bot).
-    await stored.msg.click(row, col);
-    console.log(`[userbot] clicked @${botKey} button [${row},${col}] "${btn.text}" (session ${sid}) — waiting for the bot's reply.`);
+    await targetMsg.click(row, col);
+    console.log(`[userbot] clicked @${botKey} button [${row},${col}] "${label}" (session ${sid}) — waiting for the bot's reply.`);
   } catch (e) {
     console.error('[userbot] click failed:', e && e.message ? e.message : e);
     return res.json({ ok: false, error: 'click failed' });
   }
   // Wait for the bot's response and route it back to this visitor.
   waitForBotReply(sid, botKey).then((reply) => {
-    if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, botKey));
+    if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, botKey, reply.tgMsgId || null));
   }).catch(() => { /* ignore — no canned fallback */ });
   return res.json({ ok: true, clicked: true });
 });
@@ -886,7 +914,7 @@ wss.on('connection', (ws, req) => {
     if (namedBot && userbotReady) {
       const cleanText = pickedBot ? text : extractBotCommand(text, namedBot);
       sendToIncomeBot(sid, namedBot.username, cleanText).then((reply) => {
-        if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, namedBot.username));
+        if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, namedBot.username, reply.tgMsgId || null));
       }).catch(() => { /* ignore — no canned fallback */ });
       return;
     }
