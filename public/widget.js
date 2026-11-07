@@ -67,7 +67,7 @@
       if (Array.isArray(stored)) history = stored.slice(-HISTORY_MAX);
     } catch (e) { history = []; }
     history.forEach(function (m) { addMsg(m, false); });
-    unread = history.filter(function (m) { return m.from === 'owner' && (m.id || 0) > lastSeen; }).length;
+    unread = history.filter(function (m) { return (m.from === 'owner' || m.from === 'bot') && (m.id || 0) > lastSeen; }).length;
     showBadge();
   }
   function setSession(id) {
@@ -92,10 +92,10 @@
     var key = m.id + ':' + (m.time || 0);
     if (seen[key]) return;
     seen[key] = 1;
-    var row = el('div', 'mla-chat-row ' + (m.from === 'owner' ? 'mla-chat-row-owner' : 'mla-chat-row-visitor'));
+    var row = el('div', 'mla-chat-row ' + (m.from === 'visitor' ? 'mla-chat-row-visitor' : 'mla-chat-row-owner'));
     row.appendChild(el('div', 'mla-chat-bubble', m.text));
     list.appendChild(row);
-    if (m.from === 'owner' && !isOpen) { unread++; showBadge(); }
+    if ((m.from === 'owner' || m.from === 'bot') && !isOpen) { unread++; showBadge(); }
     if (save !== false) {
       history.push(m);
       if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);

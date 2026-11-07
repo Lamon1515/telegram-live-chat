@@ -1,0 +1,220 @@
+<!-- MLA Bot page snippet — full-page chat with a BOT SELECTOR.
+     Paste into a WordPress Custom HTML block / Elementor HTML widget.
+     Uses the same session + localStorage as the floating widget, so the chat
+     is shared between this page and the widget.
+     The visitor picks a bot from the list (fetched from GET /api/bots);
+     messages go to the SELECTED bot via the GramJS userbot bridge, and that
+     bot's REAL reply comes back (marked from:'bot'). -->
+<div id="mla-bot-page" style="max-width:560px;margin:0 auto;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;">
+  <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid #e5e7eb;">
+    <div style="width:42px;height:42px;border-radius:50%;background:#0088cc;color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;">🤖</div>
+    <div>
+      <div id="mla-bot-title" style="font-weight:700;font-size:16px;">MLA Bot</div>
+      <div id="mla-bot-sub" style="font-size:12px;color:#6b7280;">বট বেছে নিন • v4</div>
+    </div>
+  </div>
+  <div id="mla-bot-picker" style="display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid #e5e7eb;overflow-x:auto;"></div>
+  <div id="mla-bot-list" style="height:55vh;min-height:320px;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:8px;"></div>
+  <form id="mla-bot-form" style="display:flex;gap:8px;padding:12px;border-top:1px solid #e5e7eb;">
+    <input id="mla-bot-input" type="text" placeholder="মেসেজ লিখুন…" maxlength="1000" autocomplete="off"
+      style="flex:1;padding:10px 12px;border:1px solid #d1d5db;border-radius:999px;font-size:15px;outline:none;">
+    <button type="submit" aria-label="Send"
+      style="width:44px;height:44px;border:none;border-radius:50%;background:#0088cc;color:#fff;font-size:18px;cursor:pointer;">➤</button>
+  </form>
+</div>
+<script>
+(function () {
+  'use strict';
+  var WS_URL = 'wss://telegram-live-chat-ej29.onrender.com/ws';
+  var API_URL = 'https://telegram-live-chat-ej29.onrender.com/api';
+  var HISTORY_MAX = 200;
+  var sessionId = localStorage.getItem('mla_chat_session') || '';
+  var seen = {};
+  var history = [];
+  var ws = null, retryMs = 1000, retryTimer = null;
+  var bots = [];
+  var selectedBot = localStorage.getItem('mla_chat_bot') || '';
+  var list = document.getElementById('mla-bot-list');
+  var form = document.getElementById('mla-bot-form');
+  var input = document.getElementById('mla-bot-input');
+  var picker = document.getElementById('mla-bot-picker');
+  var titleEl = document.getElementById('mla-bot-title');
+  var subEl = document.getElementById('mla-bot-sub');
+  function historyKey() { return 'mla_chat_history_' + sessionId; }
+  function saveHistory() {
+    try { localStorage.setItem(historyKey(), JSON.stringify(history.slice(-HISTORY_MAX))); } catch (e) {}
+  }
+  function scrollBottom() { list.scrollTop = list.scrollHeight; }
+  function addMsg(m, save) {
+    if (!m) return;
+    // Dedupe by id+time, not id alone: after a server restart the per-session
+    // id counter resets to 1, so a new message can reuse an id already stored
+    // in localStorage — id alone would wrongly drop it as a duplicate.
+    var key = m.id + ':' + (m.time || 0);
+    if (seen[key]) return;
+    seen[key] = 1;
+    // Bot answers (from:'bot') and owner replies (from:'owner') show on the
+    // left; the visitor's own messages show on the right.
+    var isLeft = (m.from === 'owner' || m.from === 'bot');
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;' + (isLeft ? 'justify-content:flex-start;' : 'justify-content:flex-end;');
+    var b = document.createElement('div');
+    b.textContent = m.text;
+    b.style.cssText = 'max-width:80%;padding:9px 12px;border-radius:14px;font-size:15px;line-height:1.45;white-space:pre-wrap;word-break:break-word;' +
+      (isLeft ? 'background:#eef2f7;color:#111827;border-bottom-left-radius:4px;' : 'background:#0088cc;color:#fff;border-bottom-right-radius:4px;');
+    row.appendChild(b);
+    list.appendChild(row);
+    if (save !== false) {
+      history.push(m);
+      if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);
+      saveHistory();
+    }
+    scrollBottom();
+  }
+  function addSys(text) {
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:center;';
+    var b = document.createElement('div');
+    b.textContent = text;
+    b.style.cssText = 'font-size:12px;color:#6b7280;background:#f3f4f6;padding:6px 10px;border-radius:999px;';
+    row.appendChild(b);
+    list.appendChild(row);
+    scrollBottom();
+  }
+  function loadHistory() {
+    history = [];
+    try {
+      var stored = JSON.parse(localStorage.getItem(historyKey()) || '[]');
+      if (Array.isArray(stored)) history = stored.slice(-HISTORY_MAX);
+    } catch (e) { history = []; }
+    history.forEach(function (m) { addMsg(m, false); });
+  }
+  function setSession(id) {
+    if (id === sessionId && history.length) return;
+    sessionId = id;
+    localStorage.setItem('mla_chat_session', sessionId);
+    seen = {};
+    list.innerHTML = '';
+    loadHistory();
+  }
+  function fetchHistory() {
+    if (!sessionId) return;
+    fetch(API_URL + '/history?session_id=' + encodeURIComponent(sessionId))
+      .then(function (r) { return r.json(); })
+      .then(function (d) { if (d && d.ok && d.messages) d.messages.forEach(addMsg); })
+      .catch(function () {});
+  }
+  // ---- Bot selector: fetch the connected bots and let the visitor pick one.
+  // The picked bot is remembered (localStorage) and sent with every message
+  // as the `bot` field, so the server routes to THAT bot — no typing the
+  // bot's @username needed.
+  function renderPicker() {
+    picker.innerHTML = '';
+    if (!bots.length) {
+      var none = document.createElement('div');
+      none.textContent = 'কোনো বট যুক্ত করা হয়নি — অ্যাডমিন প্যানেল থেকে বট যুক্ত করুন।';
+      none.style.cssText = 'font-size:13px;color:#6b7280;padding:4px 2px;';
+      picker.appendChild(none);
+      return;
+    }
+    bots.forEach(function (b) {
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.textContent = '🤖 ' + (b.name || b.username);
+      var active = (selectedBot === b.username);
+      chip.style.cssText = 'flex:0 0 auto;padding:8px 14px;border-radius:999px;font-size:14px;cursor:pointer;border:1px solid ' +
+        (active ? '#0088cc;background:#0088cc;color:#fff;' : '#d1d5db;background:#fff;color:#111827;');
+      chip.addEventListener('click', function () { selectBot(b.username); });
+      picker.appendChild(chip);
+    });
+  }
+  function selectBot(username) {
+    selectedBot = username;
+    try { localStorage.setItem('mla_chat_bot', username); } catch (e) {}
+    var b = bots.find(function (x) { return x.username === username; });
+    if (b) {
+      titleEl.textContent = b.name || b.username;
+      subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v4';
+      addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
+    }
+    renderPicker();
+  }
+  function fetchBots() {
+    fetch(API_URL + '/bots')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok && Array.isArray(d.bots)) {
+          bots = d.bots;
+          // Auto-select: the remembered bot, else the first bot.
+          if (!bots.find(function (x) { return x.username === selectedBot; })) {
+            selectedBot = bots.length ? bots[0].username : '';
+            try { localStorage.setItem('mla_chat_bot', selectedBot); } catch (e) {}
+          }
+          if (selectedBot) {
+            var b = bots.find(function (x) { return x.username === selectedBot; });
+            if (b) { titleEl.textContent = b.name || b.username; subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v4'; }
+          }
+          renderPicker();
+        }
+      })
+      .catch(function () {});
+  }
+  function connect() {
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    var url = WS_URL + '?session_id=' + encodeURIComponent(sessionId);
+    try { ws = new WebSocket(url); } catch (e) { retryTimer = setTimeout(connect, retryMs); return; }
+    ws.onopen = function () { retryMs = 1000; };
+    ws.onmessage = function (ev) {
+      var d;
+      try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.type === 'hello' && d.session_id) setSession(d.session_id);
+      if (d.type === 'history' && d.messages) d.messages.forEach(addMsg);
+      if (d.type === 'message' && d.message) addMsg(d.message);
+      if (d.type === 'error') addSys(d.error || 'Error');
+    };
+    ws.onclose = function () {
+      ws = null;
+      retryTimer = setTimeout(connect, retryMs);
+      retryMs = Math.min(retryMs * 2, 10000);
+    };
+    ws.onerror = function () { try { ws.close(); } catch (e) {} };
+  }
+  function send(text) {
+    // Send via REST, not WebSocket: the WS echo proved unreliable from this
+    // page (messages sent over a stale/half-open socket never reach the
+    // server and no error shows). REST /api/send is proven to work
+    // (tg_ok:true) and CORS is enabled on the server, so use it as the
+    // primary path. WS stays connected only for receiving replies.
+    // Include the selected bot so the server routes to THAT bot.
+    var body = { session_id: sessionId, text: text };
+    if (selectedBot) body.bot = selectedBot;
+    fetch(API_URL + '/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok) {
+          if (d.session_id) setSession(d.session_id);
+          fetchHistory();
+        } else { addSys('মেসেজ পাঠানো যায়নি। আবার চেষ্টা করুন।'); }
+      })
+      .catch(function () { addSys('নেটওয়ার্ক সমস্যা। আবার চেষ্টা করুন।'); });
+  }
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    send(text);
+  });
+  if (sessionId) loadHistory();
+  fetchBots();
+  connect();
+  fetchHistory();
+  // Poll history every 10s as a fallback so bot replies still arrive
+  // even if the WebSocket drops (WS stays the fast path for replies).
+  setInterval(fetchHistory, 10000);
+})();
+</script>
