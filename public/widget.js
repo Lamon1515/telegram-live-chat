@@ -137,11 +137,11 @@
     ws.onerror = function () { try { ws.close(); } catch (e) {} };
   }
   function send(text) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'send', text: text }));
-      return;
-    }
-    // Fallback: REST API (works even while the socket is reconnecting)
+    // Send via REST, not WebSocket: the WS echo proved unreliable from the
+    // site page (messages over a stale/half-open socket never reach the
+    // server and no error shows). REST /api/send is proven to work and
+    // CORS is enabled, so use it as the primary path. WS stays connected
+    // only for receiving owner replies.
     fetch(API_URL + '/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -177,4 +177,8 @@
   });
   if (sessionId) loadHistory();
   connect();
+  fetchHistory();
+  // Poll history every 10s as a fallback so owner replies still arrive
+  // even if the WebSocket drops (WS stays the fast path for replies).
+  setInterval(fetchHistory, 10000);
 })();
