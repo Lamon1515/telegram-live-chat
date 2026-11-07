@@ -10,10 +10,11 @@
     <div style="width:42px;height:42px;border-radius:50%;background:#0088cc;color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;">🤖</div>
     <div>
       <div id="mla-bot-title" style="font-weight:700;font-size:16px;">MLA Bot</div>
-      <div id="mla-bot-sub" style="font-size:12px;color:#6b7280;">বট বেছে নিন • v4</div>
+      <div id="mla-bot-sub" style="font-size:12px;color:#6b7280;">বট বেছে নিন • v5</div>
     </div>
   </div>
   <div id="mla-bot-picker" style="display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid #e5e7eb;overflow-x:auto;"></div>
+  <div id="mla-bot-commands" style="display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid #e5e7eb;overflow-x:auto;"></div>
   <div id="mla-bot-list" style="height:55vh;min-height:320px;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:8px;"></div>
   <form id="mla-bot-form" style="display:flex;gap:8px;padding:12px;border-top:1px solid #e5e7eb;">
     <input id="mla-bot-input" type="text" placeholder="মেসেজ লিখুন…" maxlength="1000" autocomplete="off"
@@ -38,6 +39,7 @@
   var form = document.getElementById('mla-bot-form');
   var input = document.getElementById('mla-bot-input');
   var picker = document.getElementById('mla-bot-picker');
+  var cmdsEl = document.getElementById('mla-bot-commands');
   var titleEl = document.getElementById('mla-bot-title');
   var subEl = document.getElementById('mla-bot-sub');
   function historyKey() { return 'mla_chat_history_' + sessionId; }
@@ -57,12 +59,17 @@
     // left; the visitor's own messages show on the right.
     var isLeft = (m.from === 'owner' || m.from === 'bot');
     var row = document.createElement('div');
-    row.style.cssText = 'display:flex;' + (isLeft ? 'justify-content:flex-start;' : 'justify-content:flex-end;');
+    row.style.cssText = 'display:flex;flex-direction:column;gap:6px;' + (isLeft ? 'align-items:flex-start;' : 'align-items:flex-end;');
     var b = document.createElement('div');
     b.textContent = m.text;
     b.style.cssText = 'max-width:80%;padding:9px 12px;border-radius:14px;font-size:15px;line-height:1.45;white-space:pre-wrap;word-break:break-word;' +
       (isLeft ? 'background:#eef2f7;color:#111827;border-bottom-left-radius:4px;' : 'background:#0088cc;color:#fff;border-bottom-right-radius:4px;');
     row.appendChild(b);
+    // Inline keyboard: the bot's real options (e.g. "Register", "Balance").
+    // Rendered as tappable buttons under the bot's message. Tapping sends
+    // the callback to the bot via /api/click — the bot's real answer comes
+    // back as a new message.
+    if (m.buttons && m.from === 'bot') renderButtons(row, m.buttons);
     list.appendChild(row);
     if (save !== false) {
       history.push(m);
@@ -70,6 +77,43 @@
       saveHistory();
     }
     scrollBottom();
+  }
+  // Render a bot message's inline keyboard as tappable buttons.
+  function renderButtons(rowEl, buttons) {
+    buttons.forEach(function (brow, r) {
+      var browEl = document.createElement('div');
+      browEl.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;max-width:90%;';
+      brow.forEach(function (btn, c) {
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.textContent = btn.text;
+        chip.style.cssText = 'padding:8px 14px;border-radius:999px;font-size:14px;cursor:pointer;border:1px solid #0088cc;background:#fff;color:#0088cc;';
+        chip.addEventListener('click', function () {
+          if (btn.url) { window.open(btn.url, '_blank'); return; }
+          clickButton(r, c, btn.text);
+        });
+        browEl.appendChild(chip);
+      });
+      rowEl.appendChild(browEl);
+    });
+  }
+  // The visitor tapped one of the bot's inline buttons. Send the tap to the
+  // server, which clicks it on the real Telegram message (callback to the bot).
+  function clickButton(row, col, text) {
+    if (!selectedBot) return;
+    addSys('👆 ' + text);
+    fetch(API_URL + '/click', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, bot: selectedBot, row: row, col: col })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.url) { window.open(d.url, '_blank'); return; }
+        if (d && d.ok) fetchHistory();
+        else addSys('বাটন কাজ করেনি। আবার চেষ্টা করুন।');
+      })
+      .catch(function () { addSys('নেটওয়ার্ক সমস্যা। আবার চেষ্টা করুন।'); });
   }
   function addSys(text) {
     var row = document.createElement('div');
@@ -134,10 +178,35 @@
     var b = bots.find(function (x) { return x.username === username; });
     if (b) {
       titleEl.textContent = b.name || b.username;
-      subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v4';
+      subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v5';
       addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
     }
     renderPicker();
+    fetchCommands(username);
+  }
+  // ---- Bot commands: the selected bot's REAL command list, auto-shown as
+  // tappable chips under the picker (like Telegram's command menu). Tapping
+  // a command sends it to the bot. Falls back to /start when the bot has no
+  // registered commands.
+  function fetchCommands(username) {
+    cmdsEl.innerHTML = '';
+    if (!username) return;
+    fetch(API_URL + '/bots/' + encodeURIComponent(username) + '/commands')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var cmds = (d && d.ok && Array.isArray(d.commands)) ? d.commands : [];
+        if (!cmds.length) cmds = [{ command: 'start', description: '' }];
+        cmds.forEach(function (c) {
+          var chip = document.createElement('button');
+          chip.type = 'button';
+          chip.textContent = '/' + c.command + (c.description ? ' — ' + c.description : '');
+          chip.title = c.description || ('/' + c.command);
+          chip.style.cssText = 'flex:0 0 auto;padding:7px 12px;border-radius:999px;font-size:13px;cursor:pointer;border:1px solid #d1d5db;background:#f3f4f6;color:#111827;';
+          chip.addEventListener('click', function () { send('/' + c.command); });
+          cmdsEl.appendChild(chip);
+        });
+      })
+      .catch(function () {});
   }
   function fetchBots() {
     fetch(API_URL + '/bots')
@@ -152,7 +221,8 @@
           }
           if (selectedBot) {
             var b = bots.find(function (x) { return x.username === selectedBot; });
-            if (b) { titleEl.textContent = b.name || b.username; subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v4'; }
+            if (b) { titleEl.textContent = b.name || b.username; subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v5'; }
+            fetchCommands(selectedBot);
           }
           renderPicker();
         }

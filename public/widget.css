@@ -44,6 +44,12 @@
 .mla-chat-row-visitor .mla-chat-bubble { background: #0088cc; color: #fff; border-bottom-right-radius: 4px; }
 .mla-chat-row-owner .mla-chat-bubble { background: #fff; color: #222; border: 1px solid #e5e9f0; border-bottom-left-radius: 4px; }
 .mla-chat-row-sys .mla-chat-bubble { background: transparent; color: #888; font-size: 12px; max-width: 90%; text-align: center; }
+/* Inline-keyboard option buttons under a bot message */
+.mla-chat-btn-row { display: flex; gap: 6px; flex-wrap: wrap; max-width: 90%; }
+.mla-chat-opt-btn {
+  padding: 7px 13px; border-radius: 999px; font-size: 13px; cursor: pointer;
+  border: 1px solid #0088cc; background: #fff; color: #0088cc;
+}
 .mla-chat-form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid #e5e9f0; background: #fff; }
 .mla-chat-input {
   flex: 1; border: 1px solid #dfe5ee; border-radius: 20px;

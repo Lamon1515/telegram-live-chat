@@ -93,7 +93,25 @@
     if (seen[key]) return;
     seen[key] = 1;
     var row = el('div', 'mla-chat-row ' + (m.from === 'visitor' ? 'mla-chat-row-visitor' : 'mla-chat-row-owner'));
-    row.appendChild(el('div', 'mla-chat-bubble', m.text));
+    var bubble = el('div', 'mla-chat-bubble', m.text);
+    row.appendChild(bubble);
+    // Inline keyboard: the bot's real options. Rendered as tappable buttons
+    // under the bot's message; tapping clicks the button on the real message.
+    if (m.buttons && m.from === 'bot') {
+      m.buttons.forEach(function (brow, r) {
+        var browEl = el('div', 'mla-chat-btn-row');
+        brow.forEach(function (btn, c) {
+          var chip = el('button', 'mla-chat-opt-btn', btn.text);
+          chip.type = 'button';
+          chip.addEventListener('click', function () {
+            if (btn.url) { window.open(btn.url, '_blank'); return; }
+            clickButton(r, c, btn.text);
+          });
+          browEl.appendChild(chip);
+        });
+        row.appendChild(browEl);
+      });
+    }
     list.appendChild(row);
     if ((m.from === 'owner' || m.from === 'bot') && !isOpen) { unread++; showBadge(); }
     if (save !== false) {
@@ -153,6 +171,25 @@
           if (d.session_id) setSession(d.session_id);
           fetchHistory();
         } else { addSys('Message could not be sent. Please try again.'); }
+      })
+      .catch(function () { addSys('Network error. Please try again.'); });
+  }
+  function clickButton(row, col, text) {
+    // The bot the visitor picked on the MLA Bot page (shared localStorage).
+    var bot = '';
+    try { bot = localStorage.getItem('mla_chat_bot') || ''; } catch (e) {}
+    if (!bot) { addSys('প্রথমে MLA Bot পেজ থেকে একটি বট বেছে নিন।'); return; }
+    addSys('👆 ' + text);
+    fetch(API_URL + '/click', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, bot: bot, row: row, col: col })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.url) { window.open(d.url, '_blank'); return; }
+        if (d && d.ok) fetchHistory();
+        else addSys('বাটন কাজ করেনি। আবার চেষ্টা করুন।');
       })
       .catch(function () { addSys('Network error. Please try again.'); });
   }
