@@ -127,7 +127,11 @@ function getSession(sid) {
   return sessions.get(sid);
 }
 
-function newMsg(session, from, text) { return { id: session.nextId++, from, text, time: Date.now() }; }
+function newMsg(session, from, text, buttons) {
+  const m = { id: session.nextId++, from, text, time: Date.now() };
+  if (buttons) m.buttons = buttons; // inline keyboard rows: [[{text, url?}, ...], ...]
+  return m;
+}
 
 // Find a session id inside text like [v_abc123...]
 function findSessionId(text) {
@@ -222,6 +226,36 @@ const botIdToUsername = new Map();
 // bot username (lowercase, no @) -> { queue: [], busy: false, pending: null }
 // pending: { sessionId, text, sentMsgId, timer, resolve }
 const botQueues = new Map();
+
+// sessionId -> the latest bot reply message (GramJS object) + its buttons.
+// Kept so the visitor can TAP a button on the site and the userbot can click
+// it on the real message (sending the callback to the bot). One entry per
+// session (the newest reply replaces the older one).
+const botReplyMsgBySession = new Map();
+
+// Extract a bot message's inline keyboard as plain JSON rows:
+// [[{text, url?}, ...], ...]. Callback buttons are clicked by row/col index
+// on the stored message object, so their raw callback data never leaves the
+// server. Returns null when the message has no inline keyboard.
+function extractInlineButtons(msg) {
+  try {
+    const rm = msg && msg.replyMarkup;
+    if (!rm || !Array.isArray(rm.rows)) return null;
+    const rows = [];
+    for (const row of rm.rows) {
+      if (!row || !Array.isArray(row.buttons)) continue;
+      const brow = [];
+      for (const b of row.buttons) {
+        if (!b || !b.text) continue;
+        const btn = { text: String(b.text) };
+        if (b.url) btn.url = String(b.url);
+        brow.push(btn);
+      }
+      if (brow.length) rows.push(brow);
+    }
+    return rows.length ? rows : null;
+  } catch (e) { return null; }
+}
 
 function peerUserIdStr(peer) {
   if (!peer) return '';
@@ -363,8 +397,13 @@ async function onUserbotMessage(event) {
     q.pending = null;
     q.busy = false;
     if (pending.timer) clearTimeout(pending.timer);
-    console.log(`[userbot] reply from @${botKey} matched session ${pending.sessionId} — routing to visitor.`);
-    pending.resolve(text);
+    // Extract the inline keyboard (options) so the site can show them as
+    // tappable buttons, and remember this message so a tap can click the
+    // button on the real Telegram message (sending the callback to the bot).
+    const buttons = extractInlineButtons(msg);
+    botReplyMsgBySession.set(pending.sessionId, { msg, botKey, buttons, time: Date.now() });
+    console.log(`[userbot] reply from @${botKey} matched session ${pending.sessionId} — routing to visitor.${buttons ? ` (${buttons.length} button row(s))` : ''}`);
+    pending.resolve({ text, buttons });
     processBotQueue(botKey);
   } catch (e) {
     console.error('[userbot] event handler error:', e && e.message ? e.message : e);
@@ -420,11 +459,13 @@ async function processBotQueue(botKey) {
 }
 
 // Route a visitor's command to a named income bot via the userbot bridge.
-// Returns a Promise that resolves with the bot's REAL reply text, or null
-// when the bot does not reply in time / the send fails / the bridge is off.
-// The reply is NOT sent here — the caller pushes it to the visitor with
-// pushToVisitor() (so it appears via WebSocket / history polling).
-// The visitor's session id is NEVER included in the text sent to the bot.
+// Returns a Promise that resolves with { text, buttons } — the bot's REAL
+// reply text plus its inline keyboard (or null when the bot does not reply
+// in time / the send fails / the bridge is off). `buttons` is null when the
+// reply has no inline keyboard. The reply is NOT sent here — the caller
+// pushes it to the visitor with pushToVisitor() (so it appears via WebSocket
+// / history polling). The visitor's session id is NEVER included in the text
+// sent to the bot.
 function sendToIncomeBot(sessionId, botUsername, text) {
   return new Promise((resolve) => {
     if (!userbotClient || !userbotReady) { resolve(null); return; }
@@ -436,6 +477,26 @@ function sendToIncomeBot(sessionId, botUsername, text) {
     // out), and the caller then routes the reply to the visitor.
     q.queue.push({ sessionId, text, sentMsgId: null, timer: null, resolve });
     processBotQueue(botKey);
+  });
+}
+
+// Wait for a bot's next message after the visitor TAPPED one of its inline
+// buttons (the callback was already sent via msg.click). Sets up a pending
+// request for that bot so onUserbotMessage routes the bot's response to this
+// visitor. Resolves with { text, buttons } or null on timeout / if busy.
+function waitForBotReply(sessionId, botKey) {
+  return new Promise((resolve) => {
+    const q = botQueueFor(botKey);
+    if (q.busy || q.pending) { resolve(null); return; } // a command is still in flight — wait for it first
+    const pending = { sessionId, text: '', sentMsgId: null, timer: null, resolve };
+    pending.timer = setTimeout(() => {
+      if (q.pending === pending) q.pending = null;
+      q.busy = false;
+      resolve(null);
+      processBotQueue(botKey);
+    }, BOT_REPLY_TIMEOUT_MS);
+    q.pending = pending;
+    q.busy = true;
   });
 }
 
@@ -630,8 +691,8 @@ app.post('/api/send', async (req, res) => {
     // When a bot was picked, the text is already the clean command.
     // When it was only named in the text, strip the name out first.
     const cleanText = pickedBot ? text : extractBotCommand(text, namedBot);
-    sendToIncomeBot(sid, namedBot.username, cleanText).then((replyText) => {
-      if (replyText) pushToVisitor(sid, newMsg(getSession(sid), 'bot', replyText));
+    sendToIncomeBot(sid, namedBot.username, cleanText).then((reply) => {
+      if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null));
       // No reply in time / send failed: send nothing (no canned fallback).
     }).catch(() => { /* ignore — no canned fallback */ });
     return res.json({ ok: true, session_id: sid, tg_ok: true, bot_routed: true });
@@ -668,6 +729,69 @@ app.get('/api/history', (req, res) => {
 // GET /api/bots — list of connected Telegram bots (income bots).
 app.get('/api/bots', (req, res) => {
   res.json({ ok: true, bots: connectedBots });
+});
+
+// GET /api/bots/:username/commands — the bot's REAL command list (from the
+// bot itself, via the userbot). The site shows these as tappable chips so
+// the visitor sees the bot's actual commands without typing them.
+app.get('/api/bots/:username/commands', async (req, res) => {
+  const bot = findBotByUsername(req.params.username);
+  if (!bot) return res.json({ ok: true, commands: [] });
+  if (!userbotClient || !userbotReady) return res.json({ ok: true, commands: [] });
+  try {
+    const { Api } = require('telegram');
+    const peer = await userbotClient.getInputEntity(bot.username);
+    const result = await userbotClient.invoke(new Api.bots.GetBotCommands({
+      scope: new Api.BotCommandScopePeer({ peer }),
+      langCode: '',
+    }));
+    const commands = [];
+    const list = (result && result.commands) || result || [];
+    for (const c of (Array.isArray(list) ? list : [])) {
+      if (c && c.command) commands.push({ command: String(c.command), description: String(c.description || '') });
+    }
+    return res.json({ ok: true, commands });
+  } catch (e) {
+    console.error('[userbot] GetBotCommands failed for @' + bot.username + ':', e && e.message ? e.message : e);
+    return res.json({ ok: true, commands: [] });
+  }
+});
+
+// POST /api/click { session_id, bot, row, col } — the visitor TAPPED one of
+// the bot's inline buttons on the site. The userbot clicks that button on
+// the real Telegram message (sending the callback to the bot), then the
+// bot's response is routed back to this visitor (from:'bot') when it arrives.
+app.post('/api/click', async (req, res) => {
+  const sid = String((req.body && req.body.session_id) || '').trim();
+  const botKey = String((req.body && req.body.bot) || '').toLowerCase().replace(/^@/, '');
+  const row = parseInt(req.body && req.body.row, 10);
+  const col = parseInt(req.body && req.body.col, 10);
+  if (!/^[A-Za-z0-9_\-]{6,32}$/.test(sid) || !botKey || Number.isNaN(row) || Number.isNaN(col)) {
+    return res.status(400).json({ ok: false, error: 'bad request' });
+  }
+  if (!userbotClient || !userbotReady) return res.json({ ok: false, error: 'bridge off' });
+  const stored = botReplyMsgBySession.get(sid);
+  if (!stored || stored.botKey !== botKey || !stored.msg || !stored.buttons) {
+    return res.json({ ok: false, error: 'no button message' });
+  }
+  if (!stored.buttons[row] || !stored.buttons[row][col]) {
+    return res.json({ ok: false, error: 'bad button' });
+  }
+  const btn = stored.buttons[row][col];
+  if (btn.url) return res.json({ ok: true, url: btn.url }); // URL button — the site opens the link
+  try {
+    // Click the button on the real message (sends the callback to the bot).
+    await stored.msg.click(row, col);
+    console.log(`[userbot] clicked @${botKey} button [${row},${col}] "${btn.text}" (session ${sid}) — waiting for the bot's reply.`);
+  } catch (e) {
+    console.error('[userbot] click failed:', e && e.message ? e.message : e);
+    return res.json({ ok: false, error: 'click failed' });
+  }
+  // Wait for the bot's response and route it back to this visitor.
+  waitForBotReply(sid, botKey).then((reply) => {
+    if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null));
+  }).catch(() => { /* ignore — no canned fallback */ });
+  return res.json({ ok: true, clicked: true });
 });
 
 // POST /api/admin/bots/sync — replace the connected-bot list (WordPress ADMIN
@@ -756,8 +880,8 @@ wss.on('connection', (ws, req) => {
     const namedBot = pickedBot || findNamedBot(text);
     if (namedBot && userbotReady) {
       const cleanText = pickedBot ? text : extractBotCommand(text, namedBot);
-      sendToIncomeBot(sid, namedBot.username, cleanText).then((replyText) => {
-        if (replyText) pushToVisitor(sid, newMsg(getSession(sid), 'bot', replyText));
+      sendToIncomeBot(sid, namedBot.username, cleanText).then((reply) => {
+        if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null));
       }).catch(() => { /* ignore — no canned fallback */ });
       return;
     }
