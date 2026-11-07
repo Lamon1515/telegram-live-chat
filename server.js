@@ -250,6 +250,15 @@ function botQueueFor(botKey) {
   return botQueues.get(botKey);
 }
 
+// Find a connected bot by its exact username (for the `bot` field the site
+// sends when the visitor picked a bot in the selector). Returns the entry
+// or null.
+function findBotByUsername(username) {
+  const u = String(username || '').toLowerCase().replace(/^@/, '');
+  if (!u) return null;
+  return connectedBots.find((b) => String(b.username || '').toLowerCase().replace(/^@/, '') === u) || null;
+}
+
 // Find the connected bot a visitor's text names (by @username or by name).
 // Returns the bots.json entry, or null when no bot is named.
 function findNamedBot(text) {
@@ -445,7 +454,16 @@ async function handleOwnerUpdate(update) {
   }
   if (!text) return;
 
+  // /start — the bot's REAL answer to a user: a welcome, not an instruction.
+  // (The owner instruction lives under /help now, so the bridge's /start
+  // gets a proper bot answer instead of an owner-only message.)
   if (text === '/start') {
+    await send('👋 MLA Bot-এ স্বাগতম!\n\nসাইট থেকেই বট চালাতে এখানে মেসেজ লিখুন — /start, /help বা যেকোনো কমান্ড পাঠান, বট নিজে উত্তর দেবে।');
+    return;
+  }
+
+  // /help — owner live-chat instructions.
+  if (text === '/help') {
     await send('Website live chat is ON. Just reply to a visitor message (long-press → Reply) to answer it, or send:\n/reply <session> <your message>');
     return;
   }
@@ -580,7 +598,10 @@ function botCommandAnswer(text) {
 }
 
 // ---------- REST API (website -> Telegram) ----------
-// POST /api/send { session_id?, text } — forwards a visitor message to the owner.
+// POST /api/send { session_id?, text, bot? } — forwards a visitor message to the owner.
+// `bot` (optional) is the username the visitor picked in the bot selector —
+// the message goes to THAT bot via the bridge. Without it, a bot named in
+// the text is used, else the message goes to the owner as live chat.
 app.post('/api/send', async (req, res) => {
   const ip = req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
   if (!ipAllowed(ip)) return res.status(429).json({ ok: false, error: 'slow down' });
@@ -598,14 +619,19 @@ app.post('/api/send', async (req, res) => {
   s.messages.push(newMsg(s, 'visitor', text));
   s.lastSeen = now;
   lastActiveSessionId = sid;
-  // If the visitor named a specific connected bot, route the CLEAN command
-  // to that bot via the GramJS userbot bridge and send its REAL reply back
-  // to this visitor when it arrives. (No canned reply while waiting.)
-  const namedBot = findNamedBot(text);
+  // The visitor picked a bot in the selector (or named one in the text):
+  // route the CLEAN command to that bot via the GramJS userbot bridge and
+  // send its REAL reply back to this visitor when it arrives. The reply is
+  // marked from:'bot' so the site shows it as the BOT answering (not the
+  // owner). (No canned reply while waiting.)
+  const pickedBot = findBotByUsername(req.body && req.body.bot);
+  const namedBot = pickedBot || findNamedBot(text);
   if (namedBot && userbotReady) {
-    const cleanText = extractBotCommand(text, namedBot);
+    // When a bot was picked, the text is already the clean command.
+    // When it was only named in the text, strip the name out first.
+    const cleanText = pickedBot ? text : extractBotCommand(text, namedBot);
     sendToIncomeBot(sid, namedBot.username, cleanText).then((replyText) => {
-      if (replyText) pushToVisitor(sid, newMsg(getSession(sid), 'owner', replyText));
+      if (replyText) pushToVisitor(sid, newMsg(getSession(sid), 'bot', replyText));
       // No reply in time / send failed: send nothing (no canned fallback).
     }).catch(() => { /* ignore — no canned fallback */ });
     return res.json({ ok: true, session_id: sid, tg_ok: true, bot_routed: true });
@@ -614,7 +640,7 @@ app.post('/api/send', async (req, res) => {
   // info (no canned text). Otherwise the message goes to the owner as live chat.
   const botAnswer = botCommandAnswer(text);
   if (botAnswer) {
-    pushToVisitor(sid, newMsg(s, 'owner', botAnswer));
+    pushToVisitor(sid, newMsg(s, 'bot', botAnswer));
     return res.json({ ok: true, session_id: sid, tg_ok: true, bot_answered: true });
   }
   // Live chat: forward the CLEAN text to the owner (no [session] tag — the
@@ -723,20 +749,22 @@ wss.on('connection', (ws, req) => {
     s.lastSeen = now;
     lastActiveSessionId = sid;
     ws.send(JSON.stringify({ type: 'message', message: msg })); // echo so the sender sees it instantly
-    // Named a specific connected bot? Route the CLEAN command to that bot via
-    // the GramJS userbot bridge; its REAL reply is pushed back when it arrives.
-    const namedBot = findNamedBot(text);
+    // The visitor picked a bot in the selector (data.bot) or named one in
+    // the text: route the CLEAN command to that bot via the GramJS userbot
+    // bridge; its REAL reply is pushed back when it arrives (from:'bot').
+    const pickedBot = findBotByUsername(data.bot);
+    const namedBot = pickedBot || findNamedBot(text);
     if (namedBot && userbotReady) {
-      const cleanText = extractBotCommand(text, namedBot);
+      const cleanText = pickedBot ? text : extractBotCommand(text, namedBot);
       sendToIncomeBot(sid, namedBot.username, cleanText).then((replyText) => {
-        if (replyText) pushToVisitor(sid, newMsg(getSession(sid), 'owner', replyText));
+        if (replyText) pushToVisitor(sid, newMsg(getSession(sid), 'bot', replyText));
       }).catch(() => { /* ignore — no canned fallback */ });
       return;
     }
     // Connected-bot question? Answer with that bot's real info (no canned text).
     const botAnswer = botCommandAnswer(text);
     if (botAnswer) {
-      pushToVisitor(sid, newMsg(s, 'owner', botAnswer));
+      pushToVisitor(sid, newMsg(s, 'bot', botAnswer));
       return;
     }
     // Live chat: forward the CLEAN text (unique id hidden) and remember the
