@@ -578,6 +578,77 @@ app.get('/api/bots', (req, res) => {
   res.json({ ok: true, bots: connectedBots });
 });
 
+// ---------- TEMPORARY one-time GramJS login (REMOVE after TG_SESSION is set) ----------
+// The user only has an iPhone — he cannot run login.js on a computer, and the
+// Muse VM's network blocks MTProto. So the login runs ON this server (Render
+// can reach Telegram): /tg-login-start sends the OTP to his phone, and
+// /tg-login-verify completes the login and returns the session string.
+// SECURITY: both endpoints require ADMIN_LOGIN_SECRET (a random env var).
+// If it is not set, both return 403. The OTP code and the session string are
+// NEVER logged. REMOVE this whole section (and the env var) once TG_SESSION
+// is set and the bridge is live.
+const ADMIN_LOGIN_SECRET = process.env.ADMIN_LOGIN_SECRET || '';
+let pendingLogin = null; // { client, phone, phoneCodeHash } — one login at a time
+
+function loginAdminOk(req) {
+  if (!ADMIN_LOGIN_SECRET) return false;
+  const s = (req.body && req.body.secret) || '';
+  return s === ADMIN_LOGIN_SECRET;
+}
+
+// POST /api/admin/tg-login-start { phone, secret } — sends the OTP to the phone.
+app.post('/api/admin/tg-login-start', async (req, res) => {
+  if (!loginAdminOk(req)) return res.status(403).json({ ok: false, error: 'forbidden' });
+  const phone = String((req.body && req.body.phone) || '').trim();
+  if (!/^\+[0-9]{8,15}$/.test(phone)) return res.status(400).json({ ok: false, error: 'bad phone' });
+  if (!TG_API_ID || !TG_API_HASH) return res.status(500).json({ ok: false, error: 'TG_API_ID/TG_API_HASH not set on server' });
+  let TelegramClient, StringSession;
+  try {
+    ({ TelegramClient } = require('telegram'));
+    ({ StringSession } = require('telegram/sessions'));
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: 'telegram package not installed' });
+  }
+  try {
+    if (pendingLogin && pendingLogin.client) { try { await pendingLogin.client.disconnect(); } catch (e) { /* ignore */ } }
+    const client = new TelegramClient(new StringSession(''), TG_API_ID, TG_API_HASH, { connectionRetries: 3 });
+    await client.connect();
+    const { phoneCodeHash } = await client.sendCode({ apiId: TG_API_ID, apiHash: TG_API_HASH }, phone);
+    pendingLogin = { client, phone, phoneCodeHash };
+    console.log('[tg-login] OTP sent to', phone);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('[tg-login] start failed:', e && e.message ? e.message : e);
+    return res.status(500).json({ ok: false, error: (e && e.message) || 'send failed' });
+  }
+});
+
+// POST /api/admin/tg-login-verify { code, secret } — completes login, returns the session string.
+app.post('/api/admin/tg-login-verify', async (req, res) => {
+  if (!loginAdminOk(req)) return res.status(403).json({ ok: false, error: 'forbidden' });
+  const code = String((req.body && req.body.code) || '').trim();
+  if (!code) return res.status(400).json({ ok: false, error: 'bad code' });
+  if (!pendingLogin) return res.status(400).json({ ok: false, error: 'no pending login — call tg-login-start first' });
+  let Api;
+  try { ({ Api } = require('telegram')); } catch (e) { return res.status(500).json({ ok: false, error: 'telegram package not installed' }); }
+  const { client, phone, phoneCodeHash } = pendingLogin;
+  try {
+    await client.invoke(new Api.auth.SignIn({ phoneNumber: phone, phoneCodeHash, phoneCode: code }));
+    const sessionString = client.session.save();
+    console.log('[tg-login] verified — session created (value not logged).');
+    try { await client.disconnect(); } catch (e) { /* ignore */ }
+    pendingLogin = null;
+    return res.json({ ok: true, session: sessionString });
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    console.error('[tg-login] verify failed:', msg);
+    if (/SESSION_PASSWORD_NEEDED|PASSWORD/i.test(msg)) {
+      return res.json({ ok: false, needPassword: true, error: '2FA password required' });
+    }
+    return res.status(400).json({ ok: false, error: msg });
+  }
+});
+
 // ---------- Telegram webhook (Telegram -> us) ----------
 app.post('/webhook', (req, res) => {
   const secret = req.get('X-Telegram-Bot-Api-Secret-Token') || '';
