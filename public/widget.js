@@ -92,6 +92,18 @@
     var key = m.id + ':' + (m.time || 0);
     if (seen[key]) return;
     seen[key] = 1;
+    // Always keep the message in history, but only DISPLAY it when it is a
+    // live-chat message (no bot tag) or belongs to the bot currently selected
+    // on the MLA Bot page — each bot's chat stays separate.
+    if (save !== false) {
+      history.push(m);
+      if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);
+      saveHistory();
+    }
+    var selBot = '';
+    try { selBot = localStorage.getItem('mla_chat_bot') || ''; } catch (e) {}
+    if (m.bot && selBot && m.bot !== selBot) return; // another bot's message — hidden here
+    if (m.bot && !selBot) return; // a bot message but no bot selected — hidden here
     var row = el('div', 'mla-chat-row ' + (m.from === 'visitor' ? 'mla-chat-row-visitor' : 'mla-chat-row-owner'));
     var bubble = el('div', 'mla-chat-bubble', m.text);
     row.appendChild(bubble);
@@ -114,11 +126,6 @@
     }
     list.appendChild(row);
     if ((m.from === 'owner' || m.from === 'bot') && !isOpen) { unread++; showBadge(); }
-    if (save !== false) {
-      history.push(m);
-      if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);
-      saveHistory();
-    }
     scrollBottom();
   }
   function addSys(text) {

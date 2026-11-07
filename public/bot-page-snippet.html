@@ -10,7 +10,7 @@
     <div style="width:42px;height:42px;border-radius:50%;background:#0088cc;color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;">🤖</div>
     <div>
       <div id="mla-bot-title" style="font-weight:700;font-size:16px;">MLA Bot</div>
-      <div id="mla-bot-sub" style="font-size:12px;color:#6b7280;">বট বেছে নিন • v5</div>
+      <div id="mla-bot-sub" style="font-size:12px;color:#6b7280;">বট বেছে নিন • v6</div>
     </div>
   </div>
   <div id="mla-bot-picker" style="display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid #e5e7eb;overflow-x:auto;"></div>
@@ -47,6 +47,22 @@
     try { localStorage.setItem(historyKey(), JSON.stringify(history.slice(-HISTORY_MAX))); } catch (e) {}
   }
   function scrollBottom() { list.scrollTop = list.scrollHeight; }
+  // Per-bot separate chats: only messages tagged with the selected bot are
+  // shown. Each bot keeps its own conversation — switching bots shows that
+  // bot's messages only (the others stay stored, not deleted).
+  function msgVisible(m) {
+    if (!m) return false;
+    if (!selectedBot) return true; // no bot picked yet — show everything
+    return m.bot === selectedBot;
+  }
+  // Re-render the chat list for the currently selected bot (used when the
+  // visitor switches bots — the other bot's messages stay in history).
+  function renderHistory() {
+    seen = {};
+    list.innerHTML = '';
+    history.forEach(function (m) { addMsg(m, false); });
+    scrollBottom();
+  }
   function addMsg(m, save) {
     if (!m) return;
     // Dedupe by id+time, not id alone: after a server restart the per-session
@@ -55,6 +71,14 @@
     var key = m.id + ':' + (m.time || 0);
     if (seen[key]) return;
     seen[key] = 1;
+    // Always keep the message in history (per-bot), but only DISPLAY it when
+    // it belongs to the currently selected bot.
+    if (save !== false) {
+      history.push(m);
+      if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);
+      saveHistory();
+    }
+    if (!msgVisible(m)) return;
     // Bot answers (from:'bot') and owner replies (from:'owner') show on the
     // left; the visitor's own messages show on the right.
     var isLeft = (m.from === 'owner' || m.from === 'bot');
@@ -71,11 +95,6 @@
     // back as a new message.
     if (m.buttons && m.from === 'bot') renderButtons(row, m.buttons);
     list.appendChild(row);
-    if (save !== false) {
-      history.push(m);
-      if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);
-      saveHistory();
-    }
     scrollBottom();
   }
   // Render a bot message's inline keyboard as tappable buttons.
@@ -178,10 +197,11 @@
     var b = bots.find(function (x) { return x.username === username; });
     if (b) {
       titleEl.textContent = b.name || b.username;
-      subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v5';
+      subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v6';
       addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
     }
     renderPicker();
+    renderHistory(); // show THIS bot's own messages (per-bot separate chats)
     fetchCommands(username);
   }
   // ---- Bot commands: the selected bot's REAL command list, auto-shown as
@@ -221,7 +241,7 @@
           }
           if (selectedBot) {
             var b = bots.find(function (x) { return x.username === selectedBot; });
-            if (b) { titleEl.textContent = b.name || b.username; subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v5'; }
+            if (b) { titleEl.textContent = b.name || b.username; subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v6'; }
             fetchCommands(selectedBot);
           }
           renderPicker();
@@ -286,5 +306,9 @@
   // Poll history every 10s as a fallback so bot replies still arrive
   // even if the WebSocket drops (WS stays the fast path for replies).
   setInterval(fetchHistory, 10000);
+  // LIVE commands: re-fetch the selected bot's command list every 60s so a
+  // change on the bot's side shows up here too (old commands disappear,
+  // new ones appear — like Telegram's command menu).
+  setInterval(function () { if (selectedBot) fetchCommands(selectedBot); }, 60000);
 })();
 </script>
