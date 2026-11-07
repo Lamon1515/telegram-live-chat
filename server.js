@@ -30,6 +30,16 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // ---------- In-memory storage (Map). No database. ----------
 const sessions = new Map(); // sessionId -> { ws, messages, nextId, createdAt, lastSeen }
+let lastActiveSessionId = null; // most recent visitor session — plain-text fallback target
+
+// Sessions with a visitor message in the last `maxAgeMs` (default 60 min), newest first.
+function recentSessions(maxAgeMs = 60 * 60 * 1000) {
+  const now = Date.now();
+  return [...sessions.entries()]
+    .filter(([, s]) => now - s.lastSeen < maxAgeMs)
+    .sort((a, b) => b[1].lastSeen - a[1].lastSeen)
+    .map(([sid]) => sid);
+}
 
 function newSessionId() { return 'v_' + crypto.randomBytes(9).toString('hex'); } // e.g. v_9f3ka82kd91x4b2c
 
@@ -139,8 +149,26 @@ async function handleOwnerUpdate(update) {
   // /reply <session> <text>
   const m = text.match(/^\/reply\s+([A-Za-z0-9_\-]{6,32})\s+([\s\S]+)$/);
   if (m) {
+    if (!sessions.has(m[1])) {
+      await send('❌ Session not found (the visitor may have left). Send /list to see active visitors.');
+      return;
+    }
     const ok = pushToVisitor(m[1], newMsg(getSession(m[1]), 'owner', m[2]));
     await send(ok ? '✅ Sent to the visitor.' : '❌ Session not found (the visitor may have left).');
+    return;
+  }
+
+  // /list — show active visitors with a /reply shortcut for each.
+  if (text === '/list') {
+    const ids = recentSessions();
+    if (!ids.length) { await send('No active visitors right now. Ask the visitor to send a message on the website first.'); return; }
+    const lines = ids.map((sid) => {
+      const s = sessions.get(sid);
+      const last = [...(s.messages || [])].reverse().find((x) => x.from === 'visitor');
+      const ago = Math.max(0, Math.round((Date.now() - s.lastSeen) / 60000));
+      return `• [${sid}] ${ago}m ago${last ? ` — "${String(last.text).slice(0, 60)}"` : ''}\n  /reply ${sid} <your message>`;
+    });
+    await send(`Active visitors (${ids.length}):\n${lines.join('\n')}`);
     return;
   }
 
@@ -151,6 +179,27 @@ async function handleOwnerUpdate(update) {
   if (sid) {
     const ok = pushToVisitor(sid, newMsg(getSession(sid), 'owner', text));
     if (ok) await send('✅ Sent to the visitor.');
+    return;
+  }
+
+  // Plain text with no reply context (e.g. just typing "Hi"): route it to the
+  // most recent active visitor instead of dropping it. With several active
+  // visitors, ask the owner to pick one — guessing would send it to the wrong person.
+  if (!text.startsWith('/')) {
+    const ids = recentSessions();
+    if (ids.length === 1) {
+      const target = ids[0];
+      lastActiveSessionId = target;
+      const ok = pushToVisitor(target, newMsg(getSession(target), 'owner', text));
+      await send(ok ? `✅ Sent to the visitor [${target}].` : '❌ Session not found (the visitor may have left).');
+      return;
+    }
+    if (ids.length > 1) {
+      const lines = ids.map((id) => `• [${id}] — /reply ${id} <your message>`).join('\n');
+      await send(`Several visitors are active — reply to one of their messages, or use:\n${lines}`);
+      return;
+    }
+    await send('No active visitor to send this to. Ask the visitor to send a message on the website first, then reply to it.');
     return;
   }
 
@@ -207,6 +256,7 @@ app.post('/api/send', async (req, res) => {
 
   s.messages.push(newMsg(s, 'visitor', text));
   s.lastSeen = now;
+  lastActiveSessionId = sid;
   try {
     const r = await tg('sendMessage', { chat_id: OWNER_CHAT_ID, text: `💬 [${sid}] New website message:\n${text}` });
     return res.json({ ok: true, session_id: sid, tg_ok: !!r.ok });
@@ -271,6 +321,7 @@ wss.on('connection', (ws, req) => {
     const msg = newMsg(s, 'visitor', text);
     s.messages.push(msg);
     s.lastSeen = now;
+    lastActiveSessionId = sid;
     ws.send(JSON.stringify({ type: 'message', message: msg })); // echo so the sender sees it instantly
     try {
       await tg('sendMessage', { chat_id: OWNER_CHAT_ID, text: `💬 [${sid}] New website message:\n${text}` });
