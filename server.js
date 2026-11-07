@@ -38,6 +38,18 @@ if (!OWNER_CHAT_ID) console.warn('[warn] OWNER_CHAT_ID is not set. Copy .env.exa
 
 const app = express();
 app.set('trust proxy', 1); // Render sits behind a proxy — needed for req.ip
+
+// CORS: the chat runs on the WordPress site (a different origin), so the
+// browser blocks /api/* fetches unless the server allows that origin.
+// Without this, the page's REST fallback and history fetch fail silently
+// (the browser blocks the response; the page shows no error).
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 app.use(express.json({ limit: '64kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
