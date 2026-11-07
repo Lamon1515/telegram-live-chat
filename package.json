@@ -1,0 +1,1 @@
+{"dependencies":{"dotenv":"^16.4.5","express":"^4.19.2","ws":"^8.18.0"},"description":"Website live chat relayed through a Telegram bot (Express + WebSocket, in-memory sessions, no database)","engines":{"node":">=18"},"main":"server.js","name":"telegram-live-chat","scripts":{"start":"node server.js"},"version":"1.0.0"}
