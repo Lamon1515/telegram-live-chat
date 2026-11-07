@@ -127,9 +127,10 @@ function getSession(sid) {
   return sessions.get(sid);
 }
 
-function newMsg(session, from, text, buttons) {
+function newMsg(session, from, text, buttons, bot) {
   const m = { id: session.nextId++, from, text, time: Date.now() };
   if (buttons) m.buttons = buttons; // inline keyboard rows: [[{text, url?}, ...], ...]
+  if (bot) m.bot = bot; // which bot this message belongs to (per-bot separate chats)
   return m;
 }
 
@@ -677,22 +678,24 @@ app.post('/api/send', async (req, res) => {
   const recent = s.messages.filter((m) => m.from === 'visitor' && now - m.time < 60000).length;
   if (recent >= SEND_LIMIT) return res.status(429).json({ ok: false, error: 'slow down' });
 
-  s.messages.push(newMsg(s, 'visitor', text));
-  s.lastSeen = now;
-  lastActiveSessionId = sid;
-  // The visitor picked a bot in the selector (or named one in the text):
-  // route the CLEAN command to that bot via the GramJS userbot bridge and
-  // send its REAL reply back to this visitor when it arrives. The reply is
-  // marked from:'bot' so the site shows it as the BOT answering (not the
-  // owner). (No canned reply while waiting.)
+  // The visitor picked a bot in the selector (or named one in the text).
+  // Tag the visitor message with that bot so each bot's chat stays separate.
   const pickedBot = findBotByUsername(req.body && req.body.bot);
   const namedBot = pickedBot || findNamedBot(text);
+  const targetBot = namedBot ? namedBot.username : null;
+  s.messages.push(newMsg(s, 'visitor', text, null, targetBot));
+  s.lastSeen = now;
+  lastActiveSessionId = sid;
+  // Route the CLEAN command to that bot via the GramJS userbot bridge and
+  // send its REAL reply back to this visitor when it arrives. The reply is
+  // marked from:'bot' (and tagged with the bot) so the site shows it as the
+  // BOT answering in THAT bot's own chat. (No canned reply while waiting.)
   if (namedBot && userbotReady) {
     // When a bot was picked, the text is already the clean command.
     // When it was only named in the text, strip the name out first.
     const cleanText = pickedBot ? text : extractBotCommand(text, namedBot);
     sendToIncomeBot(sid, namedBot.username, cleanText).then((reply) => {
-      if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null));
+      if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, namedBot.username));
       // No reply in time / send failed: send nothing (no canned fallback).
     }).catch(() => { /* ignore — no canned fallback */ });
     return res.json({ ok: true, session_id: sid, tg_ok: true, bot_routed: true });
@@ -789,7 +792,7 @@ app.post('/api/click', async (req, res) => {
   }
   // Wait for the bot's response and route it back to this visitor.
   waitForBotReply(sid, botKey).then((reply) => {
-    if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null));
+    if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, botKey));
   }).catch(() => { /* ignore — no canned fallback */ });
   return res.json({ ok: true, clicked: true });
 });
@@ -868,20 +871,22 @@ wss.on('connection', (ws, req) => {
       ws.send(JSON.stringify({ type: 'error', error: 'slow down' }));
       return;
     }
-    const msg = newMsg(s, 'visitor', text);
+    // The visitor picked a bot in the selector (data.bot) or named one in
+    // the text. Tag the message with that bot so each bot's chat stays separate.
+    const pickedBot = findBotByUsername(data.bot);
+    const namedBot = pickedBot || findNamedBot(text);
+    const targetBot = namedBot ? namedBot.username : null;
+    const msg = newMsg(s, 'visitor', text, null, targetBot);
     s.messages.push(msg);
     s.lastSeen = now;
     lastActiveSessionId = sid;
     ws.send(JSON.stringify({ type: 'message', message: msg })); // echo so the sender sees it instantly
-    // The visitor picked a bot in the selector (data.bot) or named one in
-    // the text: route the CLEAN command to that bot via the GramJS userbot
-    // bridge; its REAL reply is pushed back when it arrives (from:'bot').
-    const pickedBot = findBotByUsername(data.bot);
-    const namedBot = pickedBot || findNamedBot(text);
+    // Route the CLEAN command to that bot via the GramJS userbot bridge;
+    // its REAL reply is pushed back when it arrives (from:'bot', tagged).
     if (namedBot && userbotReady) {
       const cleanText = pickedBot ? text : extractBotCommand(text, namedBot);
       sendToIncomeBot(sid, namedBot.username, cleanText).then((reply) => {
-        if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null));
+        if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, namedBot.username));
       }).catch(() => { /* ignore — no canned fallback */ });
       return;
     }
