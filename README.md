@@ -21,7 +21,7 @@ telegram-live-chat-node/
 ## কীভাবে কাজ করে
 
 1. ভিজিটর সাইট খুললে `localStorage`-এ একটা Unique Session ID (`v_...`) তৈরি হয়; পুরোনো history-ও `localStorage` থেকে লোড হয়।
-2. ভিজিটর মেসেজ পাঠায় (WebSocket `/ws`, fallback `/api/send`) → সার্ভার `sendMessage` দিয়ে তোমার Telegram-এ পাঠায়, মেসেজে `[session-id]` লেখা থাকে।
+2. ভিজিটর মেসেজ পাঠায় (REST `/api/send` primary, WebSocket `/ws` শুধু reply পাওয়ার জন্য) → সার্ভার `sendMessage` দিয়ে তোমার Telegram-এ পাঠায় — মেসেজে শুধু আসল লেখাটাই থাকে, কোনো `[session-id]` ট্যাগ থাকে না (ইউনিক আইডি গোপন থাকে)। সার্ভার Telegram-এর `message_id` মনে রাখে, তাই তুমি ওই মেসেজে Reply দিলেই সঠিক ভিজিটরের কাছে উত্তর যায়।
 3. তুমি Telegram-এ ওই মেসেজে Reply দিলে (বা `/reply <session> <text>` লিখলে) Telegram Webhook (`/webhook`) হয়ে সার্ভারে আসে।
 4. সার্ভার `sessions` Map থেকে ওই session-এর WebSocket খুঁজে শুধু তাকেই reply পাঠায় — অন্য ভিজিটররা কিছু দেখে না।
 
@@ -88,9 +88,15 @@ Render free ১৫ মিনিট idle থাকলে ঘুমিয়ে �
 
 ## Owner হিসেবে reply করার নিয়ম
 
-- ভিজিটরের মেসেজে **Reply** (swipe/long-press → Reply) করে উত্তর লেখো — সবচেয়ে সহজ।
-- অথবা লেখো: `/reply v_abc123... তোমার উত্তর` (session id মেসেজের `[ ]`-এর ভেতরে থাকে)।
+- ভিজিটরের মেসেজে **Reply** (swipe/long-press → Reply) করে উত্তর লেখো — সবচেয়ে সহজ। মেসেজে কোনো session id দেখা যায় না; সার্ভার Telegram-এর `message_id` দিয়ে সঠিক ভিজিটর খুঁজে নেয়।
+- অথবা লেখো: `/reply v_abc123... তোমার উত্তর` (session id দেখতে `/list` লেখো)।
 - Plain মেসেজ (Reply ছাড়া) লিখলে সবচেয়ে recent active ভিজিটরের কাছে যাবে — একাধিক active ভিজিটর থাকলে বট `/reply` দিয়ে বেছে নিতে বলবে। `/list` লিখলে active ভিজিটরদের লিস্ট দেখাবে।
+
+## বটের আসল কমান্ড (ভিজিটর সাইট থেকে পাঠালে বট নিজেই উত্তর দেয়)
+
+- `/start` — বটের আসল স্বাগতম মেসেজ (ম্যানুয়াল reply লাগে না)।
+- `/help` — কমান্ডের তালিকা।
+- "ইনকাম" / বটের নাম / username — নিচের connected বটের আসল তথ্য + লিংক।
 
 ## Connected bots — অন্য টেলিগ্রাম বট যুক্ত করা (ইনকাম বট)
 

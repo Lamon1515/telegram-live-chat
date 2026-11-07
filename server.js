@@ -57,6 +57,21 @@ app.use(express.static(path.join(__dirname, 'public')));
 const sessions = new Map(); // sessionId -> { ws, messages, nextId, createdAt, lastSeen }
 let lastActiveSessionId = null; // most recent visitor session — plain-text fallback target
 
+// Map a Telegram message_id (of a visitor message we forwarded to the owner)
+// back to the visitor session. This is how the unique session id stays HIDDEN:
+// the owner just replies to the message (long-press Reply) and we route the
+// reply to the right visitor via this map — the [v_xxx] tag never appears in
+// the message text the bot/owner sees, so a bot command stays a clean command.
+const tgMsgToSession = new Map(); // telegram message_id -> sessionId
+function rememberTgMsg(messageId, sid) {
+  if (typeof messageId !== 'number') return;
+  tgMsgToSession.set(messageId, sid);
+  if (tgMsgToSession.size > 2000) {
+    const first = tgMsgToSession.keys().next().value;
+    if (first !== undefined) tgMsgToSession.delete(first);
+  }
+}
+
 // Sessions with a visitor message in the last `maxAgeMs` (default 60 min), newest first.
 function recentSessions(maxAgeMs = 60 * 60 * 1000) {
   const now = Date.now();
@@ -167,7 +182,7 @@ async function handleOwnerUpdate(update) {
   if (!text) return;
 
   if (text === '/start') {
-    await send('Website live chat is ON. Reply to a visitor message to answer it, or send:\n/reply <session> <your message>');
+    await send('Website live chat is ON. Just reply to a visitor message (long-press → Reply) to answer it, or send:\n/reply <session> <your message>');
     return;
   }
 
@@ -197,10 +212,16 @@ async function handleOwnerUpdate(update) {
     return;
   }
 
-  // Reply-to a visitor message: the session id sits inside the quoted message.
-  const sid = msg.reply_to_message && msg.reply_to_message.text
-    ? findSessionId(msg.reply_to_message.text)
-    : null;
+  // Reply-to a visitor message: route it back via the hidden message_id map
+  // (the unique session id never appears in the message text anymore).
+  // Fallback: the old [v_xxx] tag, for messages sent before this change.
+  let sid = null;
+  if (msg.reply_to_message && typeof msg.reply_to_message.message_id === 'number') {
+    sid = tgMsgToSession.get(msg.reply_to_message.message_id) || null;
+  }
+  if (!sid && msg.reply_to_message && msg.reply_to_message.text) {
+    sid = findSessionId(msg.reply_to_message.text);
+  }
   if (sid) {
     const ok = pushToVisitor(sid, newMsg(getSession(sid), 'owner', text));
     if (ok) await send('✅ Sent to the visitor.');
@@ -285,6 +306,21 @@ function findBotAnswer(text) {
   return `এই বটগুলো থেকে ইনকাম করতে পারবেন:\n\n${lines.join('\n\n')}`;
 }
 
+// ---------- Real bot-command answers for site visitors ----------
+// The bot answers these itself with its REAL answer — no manual reply needed
+// and nothing is forwarded to the owner. Returns the reply text, or null when
+// the message is not a bot command (then it goes to the owner as live chat).
+function botCommandAnswer(text) {
+  const t = String(text || '').trim();
+  if (t === '/start') {
+    return '👋 স্বাগতম! আমি MLA Bot।\n\nএখান থেকে সরাসরি বট চালাতে পারবেন — মেসেজ লিখুন, আমি উত্তর দেব।\n\nইনকাম বট সম্পর্কে জানতে "ইনকাম" লিখুন।\nসাহায্যের জন্য /help লিখুন।';
+  }
+  if (t === '/help') {
+    return '📖 সাহায্য:\n/start — শুরু করুন\n/help — এই তালিকা\n"ইনকাম" — ইনকাম বটের তালিকা\n\nসরাসরি মেসেজ লিখলে সেটা সাইটের মালিকের কাছে যাবে, উনি উত্তর দেবেন।';
+  }
+  return findBotAnswer(t);
+}
+
 // ---------- REST API (website -> Telegram) ----------
 // POST /api/send { session_id?, text } — forwards a visitor message to the owner.
 app.post('/api/send', async (req, res) => {
@@ -304,12 +340,22 @@ app.post('/api/send', async (req, res) => {
   s.messages.push(newMsg(s, 'visitor', text));
   s.lastSeen = now;
   lastActiveSessionId = sid;
-  // If the visitor asked about a connected bot, answer instantly with that
-  // bot's real info + link (real-time bot answer, no manual reply needed).
-  const botAnswer = findBotAnswer(text);
-  if (botAnswer) pushToVisitor(sid, newMsg(s, 'owner', botAnswer));
+  // If it is a real bot command (/start, /help, or a connected-bot question),
+  // the bot answers itself with its REAL answer — no manual reply needed,
+  // and nothing is forwarded to the owner.
+  const botAnswer = botCommandAnswer(text);
+  if (botAnswer) {
+    pushToVisitor(sid, newMsg(s, 'owner', botAnswer));
+    return res.json({ ok: true, session_id: sid, tg_ok: true, bot_answered: true });
+  }
+  // Live chat: forward the CLEAN text to the owner (no [session] tag — the
+  // unique id stays hidden). Remember the Telegram message_id so the owner's
+  // reply-to routes back to this visitor.
   try {
-    const r = await tg('sendMessage', { chat_id: OWNER_CHAT_ID, text: `💬 [${sid}] New website message:\n${text}` });
+    const r = await tg('sendMessage', { chat_id: OWNER_CHAT_ID, text });
+    if (r && r.ok && r.result && typeof r.result.message_id === 'number') {
+      rememberTgMsg(r.result.message_id, sid);
+    }
     return res.json({ ok: true, session_id: sid, tg_ok: !!r.ok });
   } catch (e) {
     return res.json({ ok: true, session_id: sid, tg_ok: false });
@@ -379,8 +425,19 @@ wss.on('connection', (ws, req) => {
     s.lastSeen = now;
     lastActiveSessionId = sid;
     ws.send(JSON.stringify({ type: 'message', message: msg })); // echo so the sender sees it instantly
+    // Real bot command? The bot answers itself with its REAL answer.
+    const botAnswer = botCommandAnswer(text);
+    if (botAnswer) {
+      pushToVisitor(sid, newMsg(s, 'owner', botAnswer));
+      return;
+    }
+    // Live chat: forward the CLEAN text (unique id hidden) and remember the
+    // Telegram message_id so the owner's reply-to routes back to this visitor.
     try {
-      await tg('sendMessage', { chat_id: OWNER_CHAT_ID, text: `💬 [${sid}] New website message:\n${text}` });
+      const r = await tg('sendMessage', { chat_id: OWNER_CHAT_ID, text });
+      if (r && r.ok && r.result && typeof r.result.message_id === 'number') {
+        rememberTgMsg(r.result.message_id, sid);
+      }
     } catch (e) { console.error('[tg]', e.message); }
   });
 
