@@ -12,6 +12,29 @@
   var HISTORY_MAX = 200;
 
   var sessionId = localStorage.getItem('mla_chat_session') || '';
+  // v8: per-session secret — a random 32-hex-char token generated once and
+  // stored next to the session id. It is sent with every request for this
+  // session; the server binds it on first contact and rejects (403) any
+  // later request that does not present it. This stops another browser/tab
+  // (or a leaked session id) from reading or sending as this visitor.
+  // The secret is never shown in the UI and never logged.
+  var sessionSecret = (function () {
+    var s = '';
+    try { s = localStorage.getItem('mla_chat_secret') || ''; } catch (e) {}
+    if (!/^[0-9a-f]{32}$/.test(s)) {
+      var bytes = new Uint8Array(16);
+      try {
+        if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
+        else throw new Error('no crypto');
+      } catch (e) {
+        for (var i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+      }
+      s = '';
+      for (var k = 0; k < 16; k++) s += ('0' + bytes[k].toString(16)).slice(-2);
+      try { localStorage.setItem('mla_chat_secret', s); } catch (e2) {}
+    }
+    return s;
+  })();
   var seen = {};
   var history = [];
   var lastSeen = parseInt(localStorage.getItem('mla_chat_lastseen') || '0', 10) || 0;
@@ -137,14 +160,14 @@
   }
   function fetchHistory() {
     if (!sessionId) return;
-    fetch(API_URL + '/history?session_id=' + encodeURIComponent(sessionId))
+    fetch(API_URL + '/history?session_id=' + encodeURIComponent(sessionId) + '&secret=' + encodeURIComponent(sessionSecret))
       .then(function (r) { return r.json(); })
       .then(function (d) { if (d && d.ok && d.messages) d.messages.forEach(addMsg); })
       .catch(function () {});
   }
   function connect() {
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-    var url = WS_URL + '?session_id=' + encodeURIComponent(sessionId);
+    var url = WS_URL + '?session_id=' + encodeURIComponent(sessionId) + '&secret=' + encodeURIComponent(sessionSecret);
     try { ws = new WebSocket(url); } catch (e) { retryTimer = setTimeout(connect, retryMs); return; }
     ws.onopen = function () { retryMs = 1000; };
     ws.onmessage = function (ev) {
@@ -153,7 +176,7 @@
       if (d.type === 'hello' && d.session_id) setSession(d.session_id);
       if (d.type === 'history' && d.messages) d.messages.forEach(addMsg);
       if (d.type === 'message' && d.message) addMsg(d.message);
-      if (d.type === 'error') addSys(d.error || 'Error');
+      if (d.type === 'error') addSys(d.error === 'blocked' ? 'এই কমান্ডটি বন্ধ আছে।' : (d.error || 'Error'));
     };
     ws.onclose = function () {
       ws = null;
@@ -171,14 +194,15 @@
     fetch(API_URL + '/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, text: text })
+      body: JSON.stringify({ session_id: sessionId, secret: sessionSecret, text: text })
     })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok) {
           if (d.session_id) setSession(d.session_id);
           fetchHistory();
-        } else { addSys('Message could not be sent. Please try again.'); }
+        } else if (d && d.error === 'blocked') { addSys('এই কমান্ডটি বন্ধ আছে।'); }
+        else { addSys('Message could not be sent. Please try again.'); }
       })
       .catch(function () { addSys('Network error. Please try again.'); });
   }
@@ -188,7 +212,7 @@
     try { bot = localStorage.getItem('mla_chat_bot') || ''; } catch (e) {}
     if (!bot) { addSys('প্রথমে MLA Bot পেজ থেকে একটি বট বেছে নিন।'); return; }
     addSys('👆 ' + text);
-    var body = { session_id: sessionId, bot: bot, row: row, col: col };
+    var body = { session_id: sessionId, secret: sessionSecret, bot: bot, row: row, col: col };
     if (tgMsgId) body.tgMsgId = tgMsgId;
     fetch(API_URL + '/click', {
       method: 'POST',

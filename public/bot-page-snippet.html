@@ -10,7 +10,7 @@
     <div style="width:42px;height:42px;border-radius:50%;background:#0088cc;color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;">🤖</div>
     <div>
       <div id="mla-bot-title" style="font-weight:700;font-size:16px;">MLA Bot</div>
-      <div id="mla-bot-sub" style="font-size:12px;color:#6b7280;">বট বেছে নিন • v7</div>
+      <div id="mla-bot-sub" style="font-size:12px;color:#6b7280;">বট বেছে নিন • v8</div>
     </div>
   </div>
   <div id="mla-bot-picker" style="display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid #e5e7eb;overflow-x:auto;"></div>
@@ -30,6 +30,29 @@
   var API_URL = 'https://telegram-live-chat-ej29.onrender.com/api';
   var HISTORY_MAX = 200;
   var sessionId = localStorage.getItem('mla_chat_session') || '';
+  // v8: per-session secret — a random 32-hex-char token generated once and
+  // stored next to the session id. It is sent with every request for this
+  // session; the server binds it on first contact and rejects (403) any
+  // later request that does not present it. This stops another browser/tab
+  // (or a leaked session id) from reading or sending as this visitor.
+  // The secret is never shown in the UI and never logged.
+  var sessionSecret = (function () {
+    var s = '';
+    try { s = localStorage.getItem('mla_chat_secret') || ''; } catch (e) {}
+    if (!/^[0-9a-f]{32}$/.test(s)) {
+      var bytes = new Uint8Array(16);
+      try {
+        if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
+        else throw new Error('no crypto');
+      } catch (e) {
+        for (var i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+      }
+      s = '';
+      for (var k = 0; k < 16; k++) s += ('0' + bytes[k].toString(16)).slice(-2);
+      try { localStorage.setItem('mla_chat_secret', s); } catch (e2) {}
+    }
+    return s;
+  })();
   var seen = {};
   var history = [];
   var ws = null, retryMs = 1000, retryTimer = null;
@@ -124,7 +147,7 @@
   function clickButton(row, col, text, tgMsgId) {
     if (!selectedBot) return;
     addSys('👆 ' + text);
-    var body = { session_id: sessionId, bot: selectedBot, row: row, col: col };
+    var body = { session_id: sessionId, secret: sessionSecret, bot: selectedBot, row: row, col: col };
     if (tgMsgId) body.tgMsgId = tgMsgId;
     fetch(API_URL + '/click', {
       method: 'POST',
@@ -167,7 +190,7 @@
   }
   function fetchHistory() {
     if (!sessionId) return;
-    fetch(API_URL + '/history?session_id=' + encodeURIComponent(sessionId))
+    fetch(API_URL + '/history?session_id=' + encodeURIComponent(sessionId) + '&secret=' + encodeURIComponent(sessionSecret))
       .then(function (r) { return r.json(); })
       .then(function (d) { if (d && d.ok && d.messages) d.messages.forEach(addMsg); })
       .catch(function () {});
@@ -202,7 +225,7 @@
     var b = bots.find(function (x) { return x.username === username; });
     if (b) {
       titleEl.textContent = b.name || b.username;
-      subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v7';
+      subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v8';
       addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
     }
     renderPicker();
@@ -213,10 +236,15 @@
   // tappable chips under the picker (like Telegram's command menu). Tapping
   // a command sends it to the bot. Falls back to /start when the bot has no
   // registered commands OR the fetch fails — so a command chip is ALWAYS
-  // visible from the start.
-  function renderCommandChips(cmds) {
+  // visible from the start. (v8: the list already merges the bot's real
+  // commands with the admin's custom commands, minus blocked ones. When
+  // /start itself is blocked, no fallback chip is shown — tapping a blocked
+  // command would only show "এই কমান্ডটি বন্ধ আছে।".)
+  function renderCommandChips(cmds, blocked) {
     cmdsEl.innerHTML = '';
-    if (!cmds.length) cmds = [{ command: 'start', description: '' }];
+    var blockedList = blocked || [];
+    var startBlocked = blockedList.some(function (b) { return String(b).toLowerCase() === '/start'; });
+    if (!cmds.length && !startBlocked) cmds = [{ command: 'start', description: '' }];
     cmds.forEach(function (c) {
       var chip = document.createElement('button');
       chip.type = 'button';
@@ -234,7 +262,8 @@
       .then(function (r) { return r.json(); })
       .then(function (d) {
         var cmds = (d && d.ok && Array.isArray(d.commands)) ? d.commands : [];
-        renderCommandChips(cmds);
+        var blocked = (d && Array.isArray(d.blocked)) ? d.blocked : [];
+        renderCommandChips(cmds, blocked);
       })
       .catch(function () { renderCommandChips([]); }); // fetch failed — still show /start
   }
@@ -251,7 +280,7 @@
           }
           if (selectedBot) {
             var b = bots.find(function (x) { return x.username === selectedBot; });
-            if (b) { titleEl.textContent = b.name || b.username; subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v7'; }
+            if (b) { titleEl.textContent = b.name || b.username; subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v8'; }
             fetchCommands(selectedBot);
           }
           renderPicker();
@@ -261,7 +290,7 @@
   }
   function connect() {
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-    var url = WS_URL + '?session_id=' + encodeURIComponent(sessionId);
+    var url = WS_URL + '?session_id=' + encodeURIComponent(sessionId) + '&secret=' + encodeURIComponent(sessionSecret);
     try { ws = new WebSocket(url); } catch (e) { retryTimer = setTimeout(connect, retryMs); return; }
     ws.onopen = function () { retryMs = 1000; };
     ws.onmessage = function (ev) {
@@ -270,7 +299,7 @@
       if (d.type === 'hello' && d.session_id) setSession(d.session_id);
       if (d.type === 'history' && d.messages) d.messages.forEach(addMsg);
       if (d.type === 'message' && d.message) addMsg(d.message);
-      if (d.type === 'error') addSys(d.error || 'Error');
+      if (d.type === 'error') addSys(d.error === 'blocked' ? 'এই কমান্ডটি বন্ধ আছে।' : (d.error || 'Error'));
     };
     ws.onclose = function () {
       ws = null;
@@ -286,7 +315,7 @@
     // (tg_ok:true) and CORS is enabled on the server, so use it as the
     // primary path. WS stays connected only for receiving replies.
     // Include the selected bot so the server routes to THAT bot.
-    var body = { session_id: sessionId, text: text };
+    var body = { session_id: sessionId, secret: sessionSecret, text: text };
     if (selectedBot) body.bot = selectedBot;
     fetch(API_URL + '/send', {
       method: 'POST',
@@ -298,7 +327,8 @@
         if (d && d.ok) {
           if (d.session_id) setSession(d.session_id);
           fetchHistory();
-        } else { addSys('মেসেজ পাঠানো যায়নি। আবার চেষ্টা করুন।'); }
+        } else if (d && d.error === 'blocked') { addSys('এই কমান্ডটি বন্ধ আছে।'); }
+        else { addSys('মেসেজ পাঠানো যায়নি। আবার চেষ্টা করুন।'); }
       })
       .catch(function () { addSys('নেটওয়ার্ক সমস্যা। আবার চেষ্টা করুন।'); });
   }
