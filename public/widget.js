@@ -85,8 +85,13 @@
     else { badge.style.display = 'none'; }
   }
   function addMsg(m, save) {
-    if (!m || seen[m.id]) return;
-    seen[m.id] = 1;
+    if (!m) return;
+    // Dedupe by id+time, not id alone: after a server restart the per-session
+    // id counter resets to 1, so a new message can reuse an id already stored
+    // in localStorage — id alone would wrongly drop it as a duplicate.
+    var key = m.id + ':' + (m.time || 0);
+    if (seen[key]) return;
+    seen[key] = 1;
     var row = el('div', 'mla-chat-row ' + (m.from === 'owner' ? 'mla-chat-row-owner' : 'mla-chat-row-visitor'));
     row.appendChild(el('div', 'mla-chat-bubble', m.text));
     list.appendChild(row);
