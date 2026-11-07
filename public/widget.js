@@ -102,7 +102,8 @@
     }
     var selBot = '';
     try { selBot = localStorage.getItem('mla_chat_bot') || ''; } catch (e) {}
-    if (m.bot && selBot && m.bot !== selBot) return; // another bot's message — hidden here
+    // Compare case-insensitively (the server may tag with either case).
+    if (m.bot && selBot && String(m.bot).toLowerCase() !== String(selBot).toLowerCase()) return; // another bot's message — hidden here
     if (m.bot && !selBot) return; // a bot message but no bot selected — hidden here
     var row = el('div', 'mla-chat-row ' + (m.from === 'visitor' ? 'mla-chat-row-visitor' : 'mla-chat-row-owner'));
     var bubble = el('div', 'mla-chat-bubble', m.text);

@@ -53,7 +53,8 @@
   function msgVisible(m) {
     if (!m) return false;
     if (!selectedBot) return true; // no bot picked yet — show everything
-    return m.bot === selectedBot;
+    // Compare case-insensitively (the server may tag with either case).
+    return String(m.bot || '').toLowerCase() === String(selectedBot).toLowerCase();
   }
   // Re-render the chat list for the currently selected bot (used when the
   // visitor switches bots — the other bot's messages stay in history).
