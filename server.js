@@ -230,6 +230,21 @@ function peerUserIdStr(peer) {
   return (v === undefined || v === null) ? '' : String(v);
 }
 
+// Extract the sender's numeric id from a GramJS message, trying every
+// field Telegram may put it in. `senderId` is normally set, but some bot
+// replies arrive with it empty — then `fromId` (raw sender peer) or
+// `peerId` (in a DM, the peer IS the other party — the bot) still has it.
+// Without this fallback the bot's reply is silently ignored as "no sender".
+function extractSenderId(msg) {
+  if (!msg) return '';
+  let id = peerUserIdStr(msg.senderId);
+  if (id) return id;
+  id = peerUserIdStr(msg.fromId);
+  if (id) return id;
+  id = peerUserIdStr(msg.peerId);
+  return id;
+}
+
 function botQueueFor(botKey) {
   if (!botQueues.has(botKey)) botQueues.set(botKey, { queue: [], busy: false, pending: null });
   return botQueues.get(botKey);
@@ -319,10 +334,10 @@ async function onUserbotMessage(event) {
     if (!msg) return;
     // Log every incoming message the userbot sees (sender + first 80 chars),
     // so a missing bot reply is visible in the logs instead of silent.
-    const senderId = peerUserIdStr(msg.senderId);
+    const senderId = extractSenderId(msg);
     const rawText = String((msg.text !== undefined && msg.text !== null ? msg.text : (msg.message || ''))).trim();
     if (msg.out === true) { console.log(`[userbot] <- outgoing (ignored) to=${senderId} text="${rawText.slice(0, 80)}"`); return; }
-    if (!senderId) { console.log('[userbot] <- incoming with no sender id (ignored)'); return; }
+    if (!senderId) { console.log(`[userbot] <- incoming with no sender id (ignored) text="${rawText.slice(0, 80)}"`); return; }
     const botKey = botIdToUsername.get(senderId);
     console.log(`[userbot] <- incoming from=${senderId} bot=${botKey || '(unknown)'} text="${rawText.slice(0, 80)}"`);
     if (!botKey) return; // not from a connected income bot
