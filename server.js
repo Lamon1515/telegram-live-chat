@@ -15,6 +15,13 @@ const OWNER_CHAT_ID = Number(process.env.OWNER_CHAT_ID || 0);
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 const PORT = Number(process.env.PORT || 3000);
+
+// GramJS userbot bridge (OPTIONAL — for operating income bots). The userbot
+// logs in as YOUR Telegram account. All three must be set, or the bridge
+// stays disabled and the owner live-chat keeps working normally.
+const TG_API_ID = Number(process.env.TG_API_ID || 0);
+const TG_API_HASH = process.env.TG_API_HASH || '';
+const TG_SESSION = process.env.TG_SESSION || '';
 const MAX_LEN = 1000; // max characters per visitor message
 const SEND_LIMIT = 10; // max visitor messages per minute per session
 const IP_LIMIT = 30; // max /api/send calls per minute per IP
@@ -164,6 +171,197 @@ function pushToVisitor(sessionId, msg) {
     try { s.ws.send(JSON.stringify({ type: 'message', message: msg })); } catch (e) { /* ignore */ }
   }
   return true;
+}
+
+// ---------- GramJS userbot bridge (operate other people's income bots) ----------
+// A Bot API bot CANNOT message another bot. Only a Telegram USER account can.
+// So this server also runs a GramJS (MTProto) user client: it sends the
+// visitor's CLEAN command to an income bot and routes that bot's REAL reply
+// back to the exact visitor session. No AI, no canned messages.
+// The bridge is OPTIONAL: if TG_API_ID / TG_API_HASH / TG_SESSION are not
+// set (or the `telegram` package is missing), the server still starts and
+// the normal owner live-chat keeps working; only the income-bot bridge is off.
+let userbotClient = null;
+let userbotReady = false;
+const BOT_REPLY_TIMEOUT_MS = 30000; // wait this long for an income bot's reply
+
+// bot username (lowercase, no @) -> numeric Telegram user id (as string)
+const botUserIds = new Map();
+// numeric Telegram user id (as string) -> bot username (lowercase, no @)
+const botIdToUsername = new Map();
+// bot username (lowercase, no @) -> { queue: [], busy: false, pending: null }
+// pending: { sessionId, text, sentMsgId, timer, resolve }
+const botQueues = new Map();
+
+function peerUserIdStr(peer) {
+  if (!peer) return '';
+  const v = peer.userId !== undefined ? peer.userId
+    : (peer.channelId !== undefined ? peer.channelId : peer.chatId);
+  return (v === undefined || v === null) ? '' : String(v);
+}
+
+function botQueueFor(botKey) {
+  if (!botQueues.has(botKey)) botQueues.set(botKey, { queue: [], busy: false, pending: null });
+  return botQueues.get(botKey);
+}
+
+// Find the connected bot a visitor's text names (by @username or by name).
+// Returns the bots.json entry, or null when no bot is named.
+function findNamedBot(text) {
+  if (!connectedBots.length) return null;
+  const q = String(text || '').toLowerCase();
+  return connectedBots.find((b) => {
+    const u = String(b.username || '').toLowerCase().replace(/^@/, '');
+    const n = String(b.name || '').toLowerCase();
+    return (u && q.includes(u)) || (n && q.includes(n));
+  }) || null;
+}
+
+// Strip the bot's own @username / name out of the visitor's text so the bot
+// receives a CLEAN command (e.g. "@SomeBot /start" -> "/start").
+// If nothing is left, the visitor only named the bot, so open it with /start.
+function extractBotCommand(text, bot) {
+  let t = String(text || '');
+  const u = String(bot.username || '').replace(/^@/, '');
+  const n = String(bot.name || '');
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (u) t = t.replace(new RegExp('@?' + esc(u), 'ig'), ' ');
+  if (n) t = t.replace(new RegExp(esc(n), 'ig'), ' ');
+  t = t.replace(/\s+/g, ' ').trim();
+  return t || '/start';
+}
+
+// Connect the GramJS user client once at startup (non-blocking).
+// Uses the StringSession from TG_SESSION — no interactive login on the server.
+// If credentials or the `telegram` package are missing, logs a warning and
+// leaves the bridge disabled; the owner live-chat is unaffected.
+async function initUserbot() {
+  if (!TG_API_ID || !TG_API_HASH || !TG_SESSION) {
+    console.warn('[userbot] disabled — set TG_API_ID, TG_API_HASH and TG_SESSION to enable the income-bot bridge. (Run `node login.js` once locally to create TG_SESSION.)');
+    return;
+  }
+  let TelegramClient, StringSession, NewMessage;
+  try {
+    ({ TelegramClient } = require('telegram'));
+    ({ StringSession } = require('telegram/sessions'));
+    ({ NewMessage } = require('telegram/events'));
+  } catch (e) {
+    console.warn('[userbot] disabled — `telegram` package not installed. Run `npm install` to enable the income-bot bridge.');
+    return;
+  }
+  try {
+    const client = new TelegramClient(new StringSession(TG_SESSION), TG_API_ID, TG_API_HASH, { connectionRetries: 5 });
+    await client.connect();
+    userbotClient = client;
+    userbotReady = true;
+    console.log('[userbot] connected as a user account — income-bot bridge is ON.');
+    client.addEventHandler(onUserbotMessage, new NewMessage({}));
+  } catch (e) {
+    console.error('[userbot] failed to connect:', e && e.message ? e.message : e);
+    userbotClient = null;
+    userbotReady = false;
+  }
+}
+
+// Incoming-message handler for the userbot client.
+// MATCHING — how a bot reply finds the right visitor (no mix-ups):
+//  - Requests to the SAME bot are SERIALISED (a per-bot FIFO queue): only one
+//    command is outstanding per bot at a time. So when that bot sends a
+//    message, it can only be the reply to the one outstanding request.
+//  - We also check `replyToMsgId` when the bot replies with one: if it does
+//    not match the sent message id of the outstanding request, the message is
+//    ignored (it is a reply to something else, not our command).
+//  - Outgoing messages (our own sends, echoed back) are ignored.
+//  - A message with no text is ignored (we only route text replies).
+//  - If the bot never replies, the request times out after 30s and resolves
+//    with null — nothing is sent to the visitor (no canned fallback).
+async function onUserbotMessage(event) {
+  try {
+    const msg = event && event.message;
+    if (!msg || msg.out === true) return; // ignore our own outgoing messages
+    const senderId = peerUserIdStr(msg.senderId);
+    if (!senderId) return;
+    const botKey = botIdToUsername.get(senderId);
+    if (!botKey) return; // not from a connected income bot
+    const q = botQueues.get(botKey);
+    if (!q || !q.pending) return; // no visitor is waiting on this bot right now
+    const replyToId = msg.replyTo ? msg.replyTo.replyToMsgId : undefined;
+    if (replyToId !== undefined && replyToId !== null && Number(replyToId) !== Number(q.pending.sentMsgId)) return; // reply to something else
+    const text = String((msg.text !== undefined && msg.text !== null ? msg.text : (msg.message || ''))).trim();
+    if (!text) return; // non-text reply — keep waiting for a text reply (or timeout)
+    const pending = q.pending;
+    q.pending = null;
+    q.busy = false;
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.resolve(text);
+    processBotQueue(botKey);
+  } catch (e) {
+    console.error('[userbot] event handler error:', e && e.message ? e.message : e);
+  }
+}
+
+// Send the next queued command to a bot (one outstanding request per bot).
+// The visitor's CLEAN command text is sent (no session id, no tag).
+async function processBotQueue(botKey) {
+  const q = botQueues.get(botKey);
+  if (!q || q.busy || !q.queue.length) return;
+  if (!userbotClient || !userbotReady) {
+    // Bridge went down — drop the queued requests silently (no canned message).
+    while (q.queue.length) { const r = q.queue.shift(); r.resolve(null); }
+    return;
+  }
+  const req = q.queue.shift();
+  q.busy = true;
+  try {
+    // Resolve the bot entity once and remember its numeric id so incoming
+    // replies can be matched to this bot.
+    let entityId = botUserIds.get(botKey);
+    if (!entityId) {
+      const entity = await userbotClient.getEntity(botKey);
+      entityId = entity && entity.id !== undefined ? String(entity.id) : '';
+      if (entityId) {
+        botUserIds.set(botKey, entityId);
+        botIdToUsername.set(entityId, botKey);
+      }
+    }
+    const sent = await userbotClient.sendMessage(botKey, { message: req.text });
+    const sentMsgId = sent && sent.id !== undefined ? Number(sent.id) : null;
+    req.sentMsgId = sentMsgId;
+    q.pending = req;
+    req.timer = setTimeout(() => {
+      // Timed out (bot did not reply in 30s): resolve with null, no message
+      // is sent to the visitor (no canned fallback).
+      if (q.pending === req) { q.pending = null; }
+      q.busy = false;
+      req.resolve(null);
+      processBotQueue(botKey);
+    }, BOT_REPLY_TIMEOUT_MS);
+  } catch (e) {
+    console.error('[userbot] send to @' + botKey + ' failed:', e && e.message ? e.message : e);
+    q.busy = false;
+    req.resolve(null);
+    processBotQueue(botKey);
+  }
+}
+
+// Route a visitor's command to a named income bot via the userbot bridge.
+// Returns a Promise that resolves with the bot's REAL reply text, or null
+// when the bot does not reply in time / the send fails / the bridge is off.
+// The reply is NOT sent here — the caller pushes it to the visitor with
+// pushToVisitor() (so it appears via WebSocket / history polling).
+// The visitor's session id is NEVER included in the text sent to the bot.
+function sendToIncomeBot(sessionId, botUsername, text) {
+  return new Promise((resolve) => {
+    if (!userbotClient || !userbotReady) { resolve(null); return; }
+    const botKey = String(botUsername || '').toLowerCase().replace(/^@/, '');
+    if (!botKey) { resolve(null); return; }
+    const q = botQueueFor(botKey);
+    // Fire-and-forget from the caller's side: the HTTP response returns
+    // immediately; this promise resolves later when the bot replies (or times
+    // out), and the caller then routes the reply to the visitor.
+    q.queue.push({ sessionId, text, sentMsgId: null, timer: null, resolve });
+    processBotQueue(botKey);
+  });
 }
 
 // Handle one Telegram update (an owner reply). Only the owner can trigger replies.
@@ -334,6 +532,18 @@ app.post('/api/send', async (req, res) => {
   s.messages.push(newMsg(s, 'visitor', text));
   s.lastSeen = now;
   lastActiveSessionId = sid;
+  // If the visitor named a specific connected bot, route the CLEAN command
+  // to that bot via the GramJS userbot bridge and send its REAL reply back
+  // to this visitor when it arrives. (No canned reply while waiting.)
+  const namedBot = findNamedBot(text);
+  if (namedBot && userbotReady) {
+    const cleanText = extractBotCommand(text, namedBot);
+    sendToIncomeBot(sid, namedBot.username, cleanText).then((replyText) => {
+      if (replyText) pushToVisitor(sid, newMsg(getSession(sid), 'owner', replyText));
+      // No reply in time / send failed: send nothing (no canned fallback).
+    }).catch(() => { /* ignore — no canned fallback */ });
+    return res.json({ ok: true, session_id: sid, tg_ok: true, bot_routed: true });
+  }
   // If the visitor asked about a connected bot, answer with that bot's real
   // info (no canned text). Otherwise the message goes to the owner as live chat.
   const botAnswer = botCommandAnswer(text);
@@ -418,6 +628,16 @@ wss.on('connection', (ws, req) => {
     s.lastSeen = now;
     lastActiveSessionId = sid;
     ws.send(JSON.stringify({ type: 'message', message: msg })); // echo so the sender sees it instantly
+    // Named a specific connected bot? Route the CLEAN command to that bot via
+    // the GramJS userbot bridge; its REAL reply is pushed back when it arrives.
+    const namedBot = findNamedBot(text);
+    if (namedBot && userbotReady) {
+      const cleanText = extractBotCommand(text, namedBot);
+      sendToIncomeBot(sid, namedBot.username, cleanText).then((replyText) => {
+        if (replyText) pushToVisitor(sid, newMsg(getSession(sid), 'owner', replyText));
+      }).catch(() => { /* ignore — no canned fallback */ });
+      return;
+    }
     // Connected-bot question? Answer with that bot's real info (no canned text).
     const botAnswer = botCommandAnswer(text);
     if (botAnswer) {
@@ -450,4 +670,5 @@ server.listen(PORT, () => {
   console.log(`Live chat server running on http://localhost:${PORT}`);
   console.log(`Webhook URL: ${PUBLIC_URL ? PUBLIC_URL + '/webhook' : '<set PUBLIC_URL in .env>'}`);
   setTimeout(() => { drainMissedUpdates().catch((e) => console.error('[drain]', e.message)); }, 3000);
+  initUserbot().catch((e) => console.error('[userbot]', e && e.message ? e.message : e));
 });

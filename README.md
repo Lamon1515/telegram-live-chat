@@ -6,10 +6,11 @@
 
 ```
 telegram-live-chat-node/
-├── server.js            # Express + WebSocket সার্ভার, in-memory Map, /webhook, /api/send
-├── package.json         # dependencies: express, ws, dotenv
+├── server.js            # Express + WebSocket সার্ভার, in-memory Map, /webhook, /api/send + GramJS userbot bridge
+├── login.js             # একবারের GramJS লগইন (লোকালি চালিয়ে TG_SESSION বানানো)
+├── package.json         # dependencies: express, ws, dotenv, telegram (GramJS), input
 ├── render.yaml          # Render Blueprint (free plan, build/start, env vars)
-├── .env.example         # BOT_TOKEN, OWNER_CHAT_ID, WEBHOOK_SECRET, PORT, PUBLIC_URL
+├── .env.example         # BOT_TOKEN, OWNER_CHAT_ID, WEBHOOK_SECRET, PORT, PUBLIC_URL + TG_API_ID/TG_API_HASH/TG_SESSION
 ├── PLAN.md              # প্ল্যানের সারাংশ (held → built)
 ├── public/
 │   ├── index.html       # ডেমো পেজ (widget সহ)
@@ -116,6 +117,26 @@ Render free ১৫ মিনিট idle থাকলে ঘুমিয়ে �
 - ভিজিটর "বট", "ইনকাম", "earn" বা কোনো বটের নাম/username লিখলেই সার্ভার ওই বটের আসল তথ্য + `t.me/username` লিংক instant reply দেবে (ম্যানুয়াল reply লাগে না)।
 - যুক্ত বটগুলোর লিস্ট দেখা যায়: `GET /api/bots` → `{"ok":true,"bots":[...]}` — সাইটে বটের directory বানাতে এই API ব্যবহার করা যায়।
 - নতুন বট যুক্ত করতে শুধু `bots.json`-এ entry যোগ করে GitHub-এ push করলেই হবে (Render auto/manual deploy)।
+
+## GramJS userbot bridge — সাইট থেকে অন্যের বট চালানো (আসল উত্তর)
+
+Bot API দিয়ে এক বট আরেক বটকে মেসেজ পাঠাতে পারে না। তাই সার্ভার GramJS (MTProto) দিয়ে তোমার **নিজের Telegram অ্যাকাউন্ট** (userbot) হিসেবেও লগইন থাকে — ওই অ্যাকাউন্ট ইনকাম বটকে কমান্ড পাঠায়, বটের আসল উত্তর সাইটে ফিরে আসে। কোনো AI নেই, কোনো বানানো মেসেজ নেই।
+
+- ভিজিটর কোনো যুক্ত বটের নাম/username লিখে কমান্ড দিলে (যেমন `@SomeEarnBot /start`), সার্ভার বটের নামটা সরিয়ে শুধু পরিষ্কার কমান্ড (`/start`) userbot দিয়ে ওই বটকে পাঠায়। ভিজিটরের session id কখনো মেসেজে যায় না (গোপন থাকে)।
+- বটের আসল উত্তর এলে সেটা ঠিক ওই ভিজিটরের চ্যাটেই যায় (WebSocket / history polling দিয়ে)। একই বটে দুজন ভিজিটর একসাথে লিখলে উত্তর গুলিয়ে যায় না — প্রতি বটে একবারে একটাই কমান্ড যায় (per-bot FIFO queue), আর বটের reply `replyToMsgId` দিয়েও মিলিয়ে নেওয়া হয়। বট ৩০ সেকেন্ডে উত্তর না দিলে কিছুই পাঠানো হয় না (বানানো মেসেজ নেই)।
+- **Bridge optional:** `TG_API_ID` / `TG_API_HASH` / `TG_SESSION` না থাকলে সার্ভার এমনিই চলে (owner live-chat আগের মতো কাজ করে); শুধু ইনকাম-বট bridge বন্ধ থাকে।
+
+### একবারের লগইন (`login.js` — লোকালি চালাও, Render-এ নয়)
+
+1. https://my.telegram.org/apps-এ গিয়ে একটা app বানিয়ে `api_id` আর `api_hash` নাও।
+2. লোকালি চালাও:
+   ```
+   npm install
+   TG_API_ID=123456 TG_API_HASH=abcdef... node login.js
+   ```
+3. ফোন নম্বর দাও → Telegram-এ আসা OTP কোড দাও → 2FA পাসওয়ার্ড থাকলে সেটা দাও।
+4. একটা session string ছাপা হবে — সেটা Render-এর Environment-এ `TG_SESSION` হিসেবে বসাও। এই string কখনো শেয়ার করো না, ফাইলে সেভ করো না, GitHub-এ দিও না — এটা তোমার Telegram অ্যাকাউন্টের লগইন।
+5. Render-এ আরও দুটো env var বসাও: `TG_API_ID`, `TG_API_HASH`। Deploy হলেই bridge চালু হবে।
 
 ## সত্যি কথাগুলো (জেনে রাখো)
 
