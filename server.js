@@ -306,19 +306,13 @@ function findBotAnswer(text) {
   return `এই বটগুলো থেকে ইনকাম করতে পারবেন:\n\n${lines.join('\n\n')}`;
 }
 
-// ---------- Real bot-command answers for site visitors ----------
-// The bot answers these itself with its REAL answer — no manual reply needed
-// and nothing is forwarded to the owner. Returns the reply text, or null when
-// the message is not a bot command (then it goes to the owner as live chat).
+// ---------- Real bot answers for site visitors ----------
+// NO canned/default messages here — the bot never invents a reply.
+// It only returns a connected bot's REAL info (from bots.json, which Lemon
+// fills with real bots). When nothing matches, it returns null and the
+// message goes to the owner as live chat.
 function botCommandAnswer(text) {
-  const t = String(text || '').trim();
-  if (t === '/start') {
-    return '👋 স্বাগতম! আমি MLA Bot।\n\nএখান থেকে সরাসরি বট চালাতে পারবেন — মেসেজ লিখুন, আমি উত্তর দেব।\n\nইনকাম বট সম্পর্কে জানতে "ইনকাম" লিখুন।\nসাহায্যের জন্য /help লিখুন।';
-  }
-  if (t === '/help') {
-    return '📖 সাহায্য:\n/start — শুরু করুন\n/help — এই তালিকা\n"ইনকাম" — ইনকাম বটের তালিকা\n\nসরাসরি মেসেজ লিখলে সেটা সাইটের মালিকের কাছে যাবে, উনি উত্তর দেবেন।';
-  }
-  return findBotAnswer(t);
+  return findBotAnswer(String(text || '').trim());
 }
 
 // ---------- REST API (website -> Telegram) ----------
@@ -340,9 +334,8 @@ app.post('/api/send', async (req, res) => {
   s.messages.push(newMsg(s, 'visitor', text));
   s.lastSeen = now;
   lastActiveSessionId = sid;
-  // If it is a real bot command (/start, /help, or a connected-bot question),
-  // the bot answers itself with its REAL answer — no manual reply needed,
-  // and nothing is forwarded to the owner.
+  // If the visitor asked about a connected bot, answer with that bot's real
+  // info (no canned text). Otherwise the message goes to the owner as live chat.
   const botAnswer = botCommandAnswer(text);
   if (botAnswer) {
     pushToVisitor(sid, newMsg(s, 'owner', botAnswer));
@@ -425,7 +418,7 @@ wss.on('connection', (ws, req) => {
     s.lastSeen = now;
     lastActiveSessionId = sid;
     ws.send(JSON.stringify({ type: 'message', message: msg })); // echo so the sender sees it instantly
-    // Real bot command? The bot answers itself with its REAL answer.
+    // Connected-bot question? Answer with that bot's real info (no canned text).
     const botAnswer = botCommandAnswer(text);
     if (botAnswer) {
       pushToVisitor(sid, newMsg(s, 'owner', botAnswer));

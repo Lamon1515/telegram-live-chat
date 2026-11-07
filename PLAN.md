@@ -6,7 +6,7 @@
 
 ## Backend (`server.js`)
 - `sessions`: `Map<sessionId, { ws, messages, nextId, createdAt, lastSeen }>` — প্রতি ভিজিটর একটা Unique Session ID (`v_` + random)।
-- `POST /api/send` — ভিজিটরের মেসেজ `sendMessage` দিয়ে owner-এর Telegram-এ পাঠায় — শুধু আসল লেখা, কোনো `[session-id]` ট্যাগ নয় (ইউনিক আইডি গোপন; routing হয় Telegram `message_id` → session Map দিয়ে)। Rate limit: প্রতি session-এ মিনিটে ১০টা; Telegram 429 এলে `retry_after` মেনে backoff। `/start` / `/help` / connected-bot প্রশ্ন হলে বট নিজেই আসল উত্তর দেয় (owner-এর কাছে forward হয় না)।
+- `POST /api/send` — ভিজিটরের মেসেজ `sendMessage` দিয়ে owner-এর Telegram-এ পাঠায় — শুধু আসল লেখা, কোনো `[session-id]` ট্যাগ নয় (ইউনিক আইডি গোপন; routing হয় Telegram `message_id` → session Map দিয়ে)। Rate limit: প্রতি session-এ মিনিটে ১০টা; Telegram 429 এলে `retry_after` মেনে backoff। কোনো ডিফল্ট/বানানো উত্তর নেই — শুধু connected-bot প্রশ্নে ওই বটের আসল তথ্য দেয়, বাকি সব owner-এর কাছে যায়।
 - `POST /webhook` — owner-এর reply রিসিভ করে শুধু ওই session-এর WebSocket-এ পাঠায়। Reply-to রাউটিং: প্রথমে `reply_to_message.message_id` → session Map, fallback পুরোনো `[v_xxx]` ট্যাগ। **Deduplication: `update_id` `Set`-এ রেখে চেক** (Telegram retry-তে একই update দুইবার এলে দ্বিতীয়বার ignore)। Secret token (`X-Telegram-Bot-Api-Secret-Token`) যাচাই। ২০০ সঙ্গে সঙ্গে, তারপর process।
 - `GET /ws` — WebSocket; connect-এ `hello` + history পাঠায়; disconnect-এ auto-reconnect (widget-এ)।
 - `GET /health` — UptimeRobot ping-এর জন্য। `GET /api/history` — reload-এ history।
