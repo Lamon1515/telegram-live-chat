@@ -265,6 +265,9 @@ function extractBotCommand(text, bot) {
 // Uses the StringSession from TG_SESSION — no interactive login on the server.
 // If credentials or the `telegram` package are missing, logs a warning and
 // leaves the bridge disabled; the owner live-chat is unaffected.
+// The client acts as a NORMAL Telegram user: when it sends a command to a
+// bot, that bot answers it exactly as it would answer any user typing the
+// command. (A Bot API bot cannot message another bot — only a user account can.)
 async function initUserbot() {
   if (!TG_API_ID || !TG_API_HASH || !TG_SESSION) {
     console.warn('[userbot] disabled — set TG_API_ID, TG_API_HASH and TG_SESSION to enable the income-bot bridge. (Run `node login.js` once locally to create TG_SESSION.)');
@@ -281,11 +284,16 @@ async function initUserbot() {
   }
   try {
     const client = new TelegramClient(new StringSession(TG_SESSION), TG_API_ID, TG_API_HASH, { connectionRetries: 5 });
+    // Register the incoming-message handler BEFORE connecting, so no reply
+    // arriving right after connect is missed.
+    client.addEventHandler(onUserbotMessage, new NewMessage({}));
     await client.connect();
+    // Verify the session really logged in as a user (and log who it is).
+    // If the session is bad/expired this throws and the bridge stays off.
+    const me = await client.getMe();
     userbotClient = client;
     userbotReady = true;
-    console.log('[userbot] connected as a user account — income-bot bridge is ON.');
-    client.addEventHandler(onUserbotMessage, new NewMessage({}));
+    console.log(`[userbot] connected as a user account (@${me && me.username ? me.username : '?'}, id=${me && me.id ? me.id : '?'}) — income-bot bridge is ON.`);
   } catch (e) {
     console.error('[userbot] failed to connect:', e && e.message ? e.message : e);
     userbotClient = null;
@@ -308,21 +316,30 @@ async function initUserbot() {
 async function onUserbotMessage(event) {
   try {
     const msg = event && event.message;
-    if (!msg || msg.out === true) return; // ignore our own outgoing messages
+    if (!msg) return;
+    // Log every incoming message the userbot sees (sender + first 80 chars),
+    // so a missing bot reply is visible in the logs instead of silent.
     const senderId = peerUserIdStr(msg.senderId);
-    if (!senderId) return;
+    const rawText = String((msg.text !== undefined && msg.text !== null ? msg.text : (msg.message || ''))).trim();
+    if (msg.out === true) { console.log(`[userbot] <- outgoing (ignored) to=${senderId} text="${rawText.slice(0, 80)}"`); return; }
+    if (!senderId) { console.log('[userbot] <- incoming with no sender id (ignored)'); return; }
     const botKey = botIdToUsername.get(senderId);
+    console.log(`[userbot] <- incoming from=${senderId} bot=${botKey || '(unknown)'} text="${rawText.slice(0, 80)}"`);
     if (!botKey) return; // not from a connected income bot
     const q = botQueues.get(botKey);
-    if (!q || !q.pending) return; // no visitor is waiting on this bot right now
+    if (!q || !q.pending) { console.log(`[userbot] no visitor waiting on @${botKey} (ignored)`); return; }
     const replyToId = msg.replyTo ? msg.replyTo.replyToMsgId : undefined;
-    if (replyToId !== undefined && replyToId !== null && Number(replyToId) !== Number(q.pending.sentMsgId)) return; // reply to something else
-    const text = String((msg.text !== undefined && msg.text !== null ? msg.text : (msg.message || ''))).trim();
-    if (!text) return; // non-text reply — keep waiting for a text reply (or timeout)
+    if (replyToId !== undefined && replyToId !== null && Number(replyToId) !== Number(q.pending.sentMsgId)) {
+      console.log(`[userbot] replyTo ${replyToId} != sent ${q.pending.sentMsgId} (ignored)`);
+      return;
+    }
+    const text = rawText;
+    if (!text) { console.log('[userbot] non-text reply (ignored, still waiting)'); return; } // non-text reply — keep waiting for a text reply (or timeout)
     const pending = q.pending;
     q.pending = null;
     q.busy = false;
     if (pending.timer) clearTimeout(pending.timer);
+    console.log(`[userbot] reply from @${botKey} matched session ${pending.sessionId} — routing to visitor.`);
     pending.resolve(text);
     processBotQueue(botKey);
   } catch (e) {
@@ -353,14 +370,18 @@ async function processBotQueue(botKey) {
         botUserIds.set(botKey, entityId);
         botIdToUsername.set(entityId, botKey);
       }
+      console.log(`[userbot] resolved @${botKey} -> id=${entityId || '(none)'}`);
     }
+    console.log(`[userbot] sending to @${botKey} as a user: "${req.text.slice(0, 80)}" (session ${req.sessionId})`);
     const sent = await userbotClient.sendMessage(botKey, { message: req.text });
     const sentMsgId = sent && sent.id !== undefined ? Number(sent.id) : null;
+    console.log(`[userbot] sent to @${botKey}, message_id=${sentMsgId} — waiting for the bot's reply (up to ${BOT_REPLY_TIMEOUT_MS / 1000}s).`);
     req.sentMsgId = sentMsgId;
     q.pending = req;
     req.timer = setTimeout(() => {
       // Timed out (bot did not reply in 30s): resolve with null, no message
       // is sent to the visitor (no canned fallback).
+      console.log(`[userbot] TIMEOUT waiting for @${botKey} (no reply in ${BOT_REPLY_TIMEOUT_MS / 1000}s, session ${req.sessionId}).`);
       if (q.pending === req) { q.pending = null; }
       q.busy = false;
       req.resolve(null);
