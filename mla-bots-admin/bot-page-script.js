@@ -49,8 +49,9 @@
     picker.style.display = (picker.style.display === 'none') ? '' : 'none';
   });
   // v9.0 (Telegram): chat-list avatar colours, cycled per bot (Telegram
-  // gives each chat its own avatar colour).
-  var AVATAR_COLORS = ['#1e88e5', '#43a047', '#8e24aa', '#fb8c00', '#00acc1', '#d81b60', '#e53935', '#5e35b1'];
+  // gives each chat its own avatar colour). v9.2: richer gradients
+  // (Telegram-blue family) + a soft ring/shadow on the avatar itself.
+  var AVATAR_COLORS = ['linear-gradient(135deg,#4db2e8,#1a8fc4)', 'linear-gradient(135deg,#66bb6a,#2e7d32)', 'linear-gradient(135deg,#ab47bc,#6a1b9a)', 'linear-gradient(135deg,#ffa726,#ef6c00)', 'linear-gradient(135deg,#26c6da,#00838f)', 'linear-gradient(135deg,#ec407a,#ad1457)', 'linear-gradient(135deg,#ef5350,#c62828)', 'linear-gradient(135deg,#7e57c2,#4527a0)'];
   function avatarInitial(b) {
     var ch = String((b && (b.name || b.username)) || '').charAt(0).toUpperCase();
     return ch || '🤖';
@@ -65,7 +66,22 @@
   function saveHistory() {
     try { localStorage.setItem(historyKey(), JSON.stringify(history.slice(-HISTORY_MAX))); } catch (e) {}
   }
-  function scrollBottom() { list.scrollTop = list.scrollHeight; }
+  // v9.2 (stability): smooth-scroll to the bottom only for NEW messages,
+  // and only when the visitor is already near the bottom — so a new
+  // message never yanks the view while they scroll up to read older
+  // messages. History renders (renderHistory/setSession) jump instantly
+  // via scrollBottom(false).
+  function scrollBottom(smooth) {
+    if (smooth) {
+      var nearBottom = (list.scrollHeight - list.scrollTop - list.clientHeight) < 140;
+      if (!nearBottom) return;
+      if (list.scrollTo) {
+        try { list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' }); return; }
+        catch (e) {}
+      }
+    }
+    list.scrollTop = list.scrollHeight;
+  }
   // Per-bot separate chats: only messages tagged with the selected bot are
   // shown. Each bot keeps its own conversation — switching bots shows that
   // bot's messages only (the others stay stored, not deleted).
@@ -104,21 +120,27 @@
     var isLeft = (m.from === 'owner' || m.from === 'bot');
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;flex-direction:column;gap:6px;' + (isLeft ? 'align-items:flex-start;' : 'align-items:flex-end;');
+    // v9.2: only NEW messages get the entrance animation (fade + tiny rise);
+    // history re-renders (save === false) stay still — no whole-list flash.
+    if (save !== false) row.className = 'mla-msg-in';
     // v9.0 (Telegram bubble): received = white, sent = light Telegram blue
     // (#d6e9f8); rounded 12px with a small tail on the sender side; soft
     // shadow; dark text. The timestamp sits bottom-right inside the bubble
     // (tiny grey); sent messages get blue ✓✓ ticks after the time.
+    // v9.2 (premium): 14px radius, richer sent blue (#cde9f8), layered
+    // soft shadow, near-black #111 text, bubbles capped at 75% width and
+    // long words wrap anywhere so nothing can push the layout sideways.
     var b = document.createElement('div');
-    b.style.cssText = 'max-width:80%;padding:8px 12px;border-radius:12px;font-size:15px;line-height:1.45;word-break:break-word;box-shadow:0 1px 2px rgba(0,0,0,0.12);' +
-      (isLeft ? 'background:#fff;color:#111827;border-bottom-left-radius:4px;' : 'background:#d6e9f8;color:#111827;border-bottom-right-radius:4px;');
+    b.style.cssText = 'max-width:75%;padding:8px 12px;border-radius:14px;font-size:15px;line-height:1.45;word-break:break-word;overflow-wrap:anywhere;box-shadow:0 1px 2px rgba(16,24,40,.10),0 4px 12px rgba(16,24,40,.06);' +
+      (isLeft ? 'background:#fff;color:#111;border-bottom-left-radius:4px;' : 'background:#cde9f8;color:#111;border-bottom-right-radius:4px;');
     var t = document.createElement('span');
     t.textContent = m.text;
-    t.style.cssText = 'white-space:pre-wrap;word-break:break-word;';
+    t.style.cssText = 'white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;';
     b.appendChild(t);
     var timeStr = m.time ? fmtTime(m.time) : '';
     if (timeStr || !isLeft) {
       var meta = document.createElement('span');
-      meta.style.cssText = 'float:right;font-size:11px;color:#8a9aa8;margin:4px 0 0 8px;white-space:nowrap;';
+      meta.style.cssText = 'float:right;font-size:10px;color:#9aa8b5;margin:4px 0 0 8px;white-space:nowrap;';
       meta.textContent = timeStr;
       if (!isLeft) {
         var ticks = document.createElement('span');
@@ -136,7 +158,7 @@
     if (m.buttons && m.from === 'bot') renderButtons(b, m.buttons, m.tgMsgId);
     row.appendChild(b);
     list.appendChild(row);
-    scrollBottom();
+    scrollBottom(save !== false);
   }
   // Render a bot message's inline keyboard, Telegram-style: full-width
   // stacked buttons attached under the message text (light blue-grey
@@ -153,7 +175,11 @@
         var chip = document.createElement('button');
         chip.type = 'button';
         chip.textContent = btn.text;
-        chip.style.cssText = 'flex:1;padding:9px 8px;border-radius:8px;font-size:14px;font-family:inherit;cursor:pointer;border:none;background:#e8f1f8;color:#0088cc;text-align:center;';
+        // v9.2: .mla-ibtn gives the press feedback (scale + darken) from the
+        // snippet's <style> block; the inline shadow keeps it soft even if
+        // that block is ever missing.
+        chip.className = 'mla-ibtn';
+        chip.style.cssText = 'flex:1;padding:9px 8px;border-radius:8px;font-size:14px;font-family:inherit;cursor:pointer;border:none;background:#e8f1f8;color:#0088cc;text-align:center;box-shadow:0 1px 2px rgba(16,24,40,.06);';
         chip.addEventListener('click', function () {
           if (btn.url) { window.open(btn.url, '_blank'); return; }
           clickButton(r, c, btn.text, tgMsgId);
@@ -196,7 +222,7 @@
     b.style.cssText = 'font-size:12px;color:#5b6b7a;background:#eef2f5;padding:5px 12px;border-radius:12px;text-align:center;';
     row.appendChild(b);
     list.appendChild(row);
-    scrollBottom();
+    scrollBottom(true);
   }
   function loadHistory() {
     history = [];
@@ -244,7 +270,7 @@
       row.style.cssText = 'display:flex;align-items:center;gap:12px;width:100%;padding:10px 12px;background:' + (active ? '#e8f1f8' : '#fff') + ';border:none;border-bottom:1px solid #f0f2f5;cursor:pointer;text-align:left;font-family:inherit;';
       var av = document.createElement('div');
       av.textContent = avatarInitial(b);
-      av.style.cssText = 'width:48px;height:48px;flex:0 0 48px;border-radius:50%;background:' + AVATAR_COLORS[i % AVATAR_COLORS.length] + ';color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;';
+      av.style.cssText = 'width:48px;height:48px;flex:0 0 48px;border-radius:50%;background:' + AVATAR_COLORS[i % AVATAR_COLORS.length] + ';color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;box-shadow:0 0 0 2px rgba(255,255,255,.9),0 2px 8px rgba(0,0,0,.18);';
       var tx = document.createElement('div');
       tx.style.cssText = 'flex:1;min-width:0;';
       var nm = document.createElement('div');
@@ -274,7 +300,7 @@
     if (b) {
       titleEl.textContent = b.name || b.username;
       avatarEl.textContent = avatarInitial(b);
-      subEl.textContent = '@' + b.username + ' • online • v9.1';
+      subEl.textContent = '@' + b.username + ' • online • v9.2';
       subEl.style.color = '#0088cc';
       addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
     }
@@ -311,7 +337,10 @@
         chip.textContent = c.description || sendText;
         chip.title = sendText;
       }
-      chip.style.cssText = 'flex:0 0 auto;padding:6px 12px;border-radius:16px;font-size:13px;font-family:inherit;cursor:pointer;border:none;background:#f0f2f5;color:#111827;';
+      chip.style.cssText = 'flex:0 0 auto;padding:6px 12px;border-radius:16px;font-size:13px;font-family:inherit;cursor:pointer;border:none;background:#f0f2f5;color:#111827;box-shadow:0 1px 3px rgba(16,24,40,.10);';
+      // v9.2: .mla-chip gives the gentle press (scale + darken) from the
+      // snippet's <style> block.
+      chip.className = 'mla-chip';
       chip.addEventListener('click', function () { send(sendText); });
       cmdsEl.appendChild(chip);
     });
@@ -344,7 +373,7 @@
             if (b) {
               titleEl.textContent = b.name || b.username;
               avatarEl.textContent = avatarInitial(b);
-              subEl.textContent = '@' + b.username + ' • online • v9.1';
+              subEl.textContent = '@' + b.username + ' • online • v9.2';
               subEl.style.color = '#0088cc';
             }
             fetchCommands(selectedBot);
