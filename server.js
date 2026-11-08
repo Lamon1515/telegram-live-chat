@@ -1179,6 +1179,9 @@ app.get('/api/bots/:username/commands', async (req, res) => {
 // Telegram message id, sent with the reply) — re-fetched fresh via
 // getMessages, so the tap works even after a server restart or on an older
 // message. Falls back to the in-memory stored message when tgMsgId is absent.
+// v8.4: a button whose label matches a blocked command is NOT clicked — it
+// behaves exactly like a blocked typed message (error 'blocked'). URL
+// buttons are exempt: they open a link, they do not send a command.
 app.post('/api/click', async (req, res) => {
   const sid = String((req.body && req.body.session_id) || '').trim();
   const botKey = String((req.body && req.body.bot) || '').toLowerCase().replace(/^@/, '');
@@ -1223,6 +1226,15 @@ app.post('/api/click', async (req, res) => {
   const label = (liveButtons[row][col] && liveButtons[row][col].text) || (btn && btn.text) || '';
   if (liveButtons[row][col] && liveButtons[row][col].url) {
     return res.json({ ok: true, url: liveButtons[row][col].url });
+  }
+  // v8.4: a blocked command also blocks the button tap. A button whose label
+  // matches a blocked entry behaves exactly like a blocked typed message:
+  // error 'blocked', nothing is sent to Telegram. Reuses isCommandBlocked()
+  // itself (slash entry = first word, plain-text entry = whole label,
+  // case-insensitive). URL buttons are handled above and never reach here.
+  const clickBot = findBotByUsername(botKey);
+  if (label && clickBot && isCommandBlocked(clickBot, label)) {
+    return res.json({ ok: false, error: 'blocked' });
   }
   try {
     // Click the button on the real message (sends the callback to the bot).
