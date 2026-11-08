@@ -1,26 +1,27 @@
-<!-- MLA Bot page snippet — full-page chat with a BOT SELECTOR.
+<!-- MLA Bot page snippet — full-page chat with a BOT SELECTOR. (v9.0: real Telegram design)
      Paste into a WordPress Custom HTML block / Elementor HTML widget.
      Uses the same session + localStorage as the floating widget, so the chat
      is shared between this page and the widget.
      The visitor picks a bot from the list (fetched from GET /api/bots);
      messages go to the SELECTED bot via the GramJS userbot bridge, and that
      bot's REAL reply comes back (marked from:'bot'). -->
-<div id="mla-bot-page" style="max-width:560px;margin:0 auto;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;">
-  <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid #e5e7eb;">
-    <div style="width:42px;height:42px;border-radius:50%;background:#0088cc;color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;">🤖</div>
-    <div>
-      <div id="mla-bot-title" style="font-weight:700;font-size:16px;">MLA Bot</div>
-      <div id="mla-bot-sub" style="font-size:12px;color:#6b7280;">বট বেছে নিন • v8.4</div>
+<div id="mla-bot-page" style="max-width:560px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,system-ui,sans-serif;background:#fff;">
+  <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#fff;border-bottom:1px solid #e5e7eb;">
+    <button id="mla-bot-back" type="button" aria-label="বট তালিকা" style="border:none;background:none;color:#0088cc;font-size:28px;line-height:1;padding:0 4px;cursor:pointer;">‹</button>
+    <div id="mla-bot-avatar" style="width:42px;height:42px;flex:0 0 42px;border-radius:50%;background:linear-gradient(135deg,#37aee2,#1e96c8);color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;">🤖</div>
+    <div style="flex:1;min-width:0;">
+      <div id="mla-bot-title" style="font-weight:700;font-size:16px;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">MLA Bot</div>
+      <div id="mla-bot-sub" style="font-size:13px;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">বট বেছে নিন • v9.0</div>
     </div>
   </div>
-  <div id="mla-bot-picker" style="display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid #e5e7eb;overflow-x:auto;"></div>
-  <div id="mla-bot-commands" style="display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid #e5e7eb;overflow-x:auto;"></div>
-  <div id="mla-bot-list" style="height:55vh;min-height:320px;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:8px;"></div>
-  <form id="mla-bot-form" style="display:flex;gap:8px;padding:12px;border-top:1px solid #e5e7eb;">
+  <div id="mla-bot-picker" style="background:#fff;border-bottom:1px solid #e5e7eb;"></div>
+  <div id="mla-bot-commands" style="display:flex;gap:8px;padding:8px 12px;background:#fff;border-bottom:1px solid #e5e7eb;overflow-x:auto;"></div>
+  <div id="mla-bot-list" style="height:55vh;min-height:320px;overflow-y:auto;padding:12px 10px;display:flex;flex-direction:column;gap:6px;background-color:#e9edf1;background-image:radial-gradient(rgba(0,0,0,0.05) 1px,transparent 1.2px);background-size:16px 16px;"></div>
+  <form id="mla-bot-form" style="display:flex;gap:8px;align-items:center;padding:8px 10px;background:#fff;border-top:1px solid #e5e7eb;">
     <input id="mla-bot-input" type="text" placeholder="মেসেজ লিখুন…" maxlength="1000" autocomplete="off"
-      style="flex:1;padding:10px 12px;border:1px solid #d1d5db;border-radius:999px;font-size:15px;outline:none;">
+      style="flex:1;min-width:0;padding:11px 16px;border:1px solid #e5e7eb;border-radius:999px;font-size:15px;outline:none;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
     <button type="submit" aria-label="Send"
-      style="width:44px;height:44px;border:none;border-radius:50%;background:#0088cc;color:#fff;font-size:18px;cursor:pointer;">➤</button>
+      style="width:46px;height:46px;flex:0 0 46px;border:none;border-radius:50%;background:#0088cc;color:#fff;font-size:18px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,0.15);">➤</button>
   </form>
 </div>
 <script>
@@ -65,6 +66,27 @@
   var cmdsEl = document.getElementById('mla-bot-commands');
   var titleEl = document.getElementById('mla-bot-title');
   var subEl = document.getElementById('mla-bot-sub');
+  var avatarEl = document.getElementById('mla-bot-avatar');
+  var backBtn = document.getElementById('mla-bot-back');
+  // v9.0 (Telegram): the back chevron shows/hides the bot list (chat list),
+  // like going back to the chat list in the Telegram app. Tapping it again
+  // brings the list back. It never deletes anything.
+  if (backBtn) backBtn.addEventListener('click', function () {
+    picker.style.display = (picker.style.display === 'none') ? '' : 'none';
+  });
+  // v9.0 (Telegram): chat-list avatar colours, cycled per bot (Telegram
+  // gives each chat its own avatar colour).
+  var AVATAR_COLORS = ['#1e88e5', '#43a047', '#8e24aa', '#fb8c00', '#00acc1', '#d81b60', '#e53935', '#5e35b1'];
+  function avatarInitial(b) {
+    var ch = String((b && (b.name || b.username)) || '').charAt(0).toUpperCase();
+    return ch || '🤖';
+  }
+  // v9.0 (Telegram): HH:MM timestamp for a bubble (m.time is epoch ms).
+  function fmtTime(ms) {
+    var d = new Date(ms);
+    var h = d.getHours(), mi = d.getMinutes();
+    return (h < 10 ? '0' + h : '' + h) + ':' + (mi < 10 ? '0' + mi : '' + mi);
+  }
   function historyKey() { return 'mla_chat_history_' + sessionId; }
   function saveHistory() {
     try { localStorage.setItem(historyKey(), JSON.stringify(history.slice(-HISTORY_MAX))); } catch (e) {}
@@ -108,36 +130,63 @@
     var isLeft = (m.from === 'owner' || m.from === 'bot');
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;flex-direction:column;gap:6px;' + (isLeft ? 'align-items:flex-start;' : 'align-items:flex-end;');
+    // v9.0 (Telegram bubble): received = white, sent = light Telegram blue
+    // (#d6e9f8); rounded 12px with a small tail on the sender side; soft
+    // shadow; dark text. The timestamp sits bottom-right inside the bubble
+    // (tiny grey); sent messages get blue ✓✓ ticks after the time.
     var b = document.createElement('div');
-    b.textContent = m.text;
-    b.style.cssText = 'max-width:80%;padding:9px 12px;border-radius:14px;font-size:15px;line-height:1.45;white-space:pre-wrap;word-break:break-word;' +
-      (isLeft ? 'background:#eef2f7;color:#111827;border-bottom-left-radius:4px;' : 'background:#0088cc;color:#fff;border-bottom-right-radius:4px;');
-    row.appendChild(b);
+    b.style.cssText = 'max-width:80%;padding:8px 12px;border-radius:12px;font-size:15px;line-height:1.45;word-break:break-word;box-shadow:0 1px 2px rgba(0,0,0,0.12);' +
+      (isLeft ? 'background:#fff;color:#111827;border-bottom-left-radius:4px;' : 'background:#d6e9f8;color:#111827;border-bottom-right-radius:4px;');
+    var t = document.createElement('span');
+    t.textContent = m.text;
+    t.style.cssText = 'white-space:pre-wrap;word-break:break-word;';
+    b.appendChild(t);
+    var timeStr = m.time ? fmtTime(m.time) : '';
+    if (timeStr || !isLeft) {
+      var meta = document.createElement('span');
+      meta.style.cssText = 'float:right;font-size:11px;color:#8a9aa8;margin:4px 0 0 8px;white-space:nowrap;';
+      meta.textContent = timeStr;
+      if (!isLeft) {
+        var ticks = document.createElement('span');
+        ticks.textContent = ' ✓✓';
+        ticks.style.color = '#0088cc';
+        meta.appendChild(ticks);
+      }
+      b.appendChild(meta);
+    }
     // Inline keyboard: the bot's real options (e.g. "Register", "Balance").
-    // Rendered as tappable buttons under the bot's message. Tapping sends
-    // the callback to the bot via /api/click — the bot's real answer comes
+    // Telegram-style: attached under the message text, full-width stacked
+    // buttons (light blue-grey, Telegram-blue text). Tapping sends the
+    // callback to the bot via /api/click — the bot's real answer comes
     // back as a new message.
-    if (m.buttons && m.from === 'bot') renderButtons(row, m.buttons, m.tgMsgId);
+    if (m.buttons && m.from === 'bot') renderButtons(b, m.buttons, m.tgMsgId);
+    row.appendChild(b);
     list.appendChild(row);
     scrollBottom();
   }
-  // Render a bot message's inline keyboard as tappable buttons.
-  function renderButtons(rowEl, buttons, tgMsgId) {
+  // Render a bot message's inline keyboard, Telegram-style: full-width
+  // stacked buttons attached under the message text (light blue-grey
+  // background #e8f1f8, Telegram-blue text, rounded corners); a row of
+  // buttons stays side-by-side in one row (equal widths).
+  function renderButtons(bubbleEl, buttons, tgMsgId) {
+    var div = document.createElement('div');
+    div.style.cssText = 'height:1px;background:#e5e7eb;margin:8px -12px 4px;';
+    bubbleEl.appendChild(div);
     buttons.forEach(function (brow, r) {
       var browEl = document.createElement('div');
-      browEl.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;max-width:90%;';
+      browEl.style.cssText = 'display:flex;gap:4px;margin-top:4px;';
       brow.forEach(function (btn, c) {
         var chip = document.createElement('button');
         chip.type = 'button';
         chip.textContent = btn.text;
-        chip.style.cssText = 'padding:8px 14px;border-radius:999px;font-size:14px;cursor:pointer;border:1px solid #0088cc;background:#fff;color:#0088cc;';
+        chip.style.cssText = 'flex:1;padding:9px 8px;border-radius:8px;font-size:14px;font-family:inherit;cursor:pointer;border:none;background:#e8f1f8;color:#0088cc;text-align:center;';
         chip.addEventListener('click', function () {
           if (btn.url) { window.open(btn.url, '_blank'); return; }
           clickButton(r, c, btn.text, tgMsgId);
         });
         browEl.appendChild(chip);
       });
-      rowEl.appendChild(browEl);
+      bubbleEl.appendChild(browEl);
     });
   }
   // The visitor tapped one of the bot's inline buttons. Send the tap to the
@@ -163,12 +212,14 @@
       })
       .catch(function () { addSys('নেটওয়ার্ক সমস্যা। আবার চেষ্টা করুন।'); });
   }
+  // v9.0 (Telegram): system lines are centered grey pills, like Telegram's
+  // date/service messages — small, rounded, grey text on a light pill.
   function addSys(text) {
     var row = document.createElement('div');
-    row.style.cssText = 'display:flex;justify-content:center;';
+    row.style.cssText = 'display:flex;justify-content:center;margin:4px 0;';
     var b = document.createElement('div');
     b.textContent = text;
-    b.style.cssText = 'font-size:12px;color:#6b7280;background:#f3f4f6;padding:6px 10px;border-radius:999px;';
+    b.style.cssText = 'font-size:12px;color:#5b6b7a;background:#eef2f5;padding:5px 12px;border-radius:12px;text-align:center;';
     row.appendChild(b);
     list.appendChild(row);
     scrollBottom();
@@ -200,24 +251,46 @@
   // The picked bot is remembered (localStorage) and sent with every message
   // as the `bot` field, so the server routes to THAT bot — no typing the
   // bot's @username needed.
+  // v9.0 (Telegram): the picker is Telegram's chat list — each bot is a row
+  // with a circular avatar (initial letter on its own colour), the bot name
+  // in bold, a preview line (its description), and a ✓ on the selected row.
   function renderPicker() {
     picker.innerHTML = '';
     if (!bots.length) {
       var none = document.createElement('div');
       none.textContent = 'কোনো বট যুক্ত করা হয়নি — অ্যাডমিন প্যানেল থেকে বট যুক্ত করুন।';
-      none.style.cssText = 'font-size:13px;color:#6b7280;padding:4px 2px;';
+      none.style.cssText = 'font-size:13px;color:#6b7280;padding:12px;';
       picker.appendChild(none);
       return;
     }
-    bots.forEach(function (b) {
-      var chip = document.createElement('button');
-      chip.type = 'button';
-      chip.textContent = '🤖 ' + (b.name || b.username);
+    bots.forEach(function (b, i) {
+      var row = document.createElement('button');
+      row.type = 'button';
       var active = (selectedBot === b.username);
-      chip.style.cssText = 'flex:0 0 auto;padding:8px 14px;border-radius:999px;font-size:14px;cursor:pointer;border:1px solid ' +
-        (active ? '#0088cc;background:#0088cc;color:#fff;' : '#d1d5db;background:#fff;color:#111827;');
-      chip.addEventListener('click', function () { selectBot(b.username); });
-      picker.appendChild(chip);
+      row.style.cssText = 'display:flex;align-items:center;gap:12px;width:100%;padding:10px 12px;background:' + (active ? '#e8f1f8' : '#fff') + ';border:none;border-bottom:1px solid #f0f2f5;cursor:pointer;text-align:left;font-family:inherit;';
+      var av = document.createElement('div');
+      av.textContent = avatarInitial(b);
+      av.style.cssText = 'width:48px;height:48px;flex:0 0 48px;border-radius:50%;background:' + AVATAR_COLORS[i % AVATAR_COLORS.length] + ';color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;';
+      var tx = document.createElement('div');
+      tx.style.cssText = 'flex:1;min-width:0;';
+      var nm = document.createElement('div');
+      nm.textContent = b.name || b.username;
+      nm.style.cssText = 'font-weight:700;font-size:15px;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      var pv = document.createElement('div');
+      pv.textContent = b.description || b.how_to_earn || 'ট্যাপ করে চ্যাট শুরু করুন';
+      pv.style.cssText = 'font-size:13px;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      tx.appendChild(nm);
+      tx.appendChild(pv);
+      row.appendChild(av);
+      row.appendChild(tx);
+      if (active) {
+        var ck = document.createElement('div');
+        ck.textContent = '✓';
+        ck.style.cssText = 'color:#0088cc;font-size:18px;font-weight:700;flex:0 0 auto;';
+        row.appendChild(ck);
+      }
+      row.addEventListener('click', function () { selectBot(b.username); });
+      picker.appendChild(row);
     });
   }
   function selectBot(username) {
@@ -226,7 +299,9 @@
     var b = bots.find(function (x) { return x.username === username; });
     if (b) {
       titleEl.textContent = b.name || b.username;
-      subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v8.4';
+      avatarEl.textContent = avatarInitial(b);
+      subEl.textContent = '@' + b.username + ' • online • v9.0';
+      subEl.style.color = '#0088cc';
       addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
     }
     renderPicker();
@@ -244,6 +319,8 @@
   // (v8.1: each entry carries `text` — the EXACT text to send. Slash
   // commands send '/name'; plain-text customs (e.g. "ব্যালেন্স") send the
   // text as-is, and the chip shows the label instead of a '/' command.)
+  // v9.0 (Telegram): command chips are soft grey pills (#f0f2f5, dark text),
+  // like Telegram's bot-command menu.
   function renderCommandChips(cmds, blocked) {
     cmdsEl.innerHTML = '';
     var blockedList = blocked || [];
@@ -260,7 +337,7 @@
         chip.textContent = c.description || sendText;
         chip.title = sendText;
       }
-      chip.style.cssText = 'flex:0 0 auto;padding:7px 12px;border-radius:999px;font-size:13px;cursor:pointer;border:1px solid #d1d5db;background:#f3f4f6;color:#111827;';
+      chip.style.cssText = 'flex:0 0 auto;padding:6px 12px;border-radius:16px;font-size:13px;font-family:inherit;cursor:pointer;border:none;background:#f0f2f5;color:#111827;';
       chip.addEventListener('click', function () { send(sendText); });
       cmdsEl.appendChild(chip);
     });
@@ -290,7 +367,12 @@
           }
           if (selectedBot) {
             var b = bots.find(function (x) { return x.username === selectedBot; });
-            if (b) { titleEl.textContent = b.name || b.username; subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v8.4'; }
+            if (b) {
+              titleEl.textContent = b.name || b.username;
+              avatarEl.textContent = avatarInitial(b);
+              subEl.textContent = '@' + b.username + ' • online • v9.0';
+              subEl.style.color = '#0088cc';
+            }
             fetchCommands(selectedBot);
           }
           renderPicker();
