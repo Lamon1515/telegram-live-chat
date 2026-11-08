@@ -44,23 +44,24 @@
   var backBtn = document.getElementById('mla-bot-back');
   // v9.0 (Telegram): the back chevron shows/hides the bot list (chat list),
   // like going back to the chat list in the Telegram app. Tapping it again
-  // brings the list back. It never deletes anything. (v9.3: kept as
+  // brings the list back. It never deletes anything. (v9.4: kept as
   // toggle-only — the site header + bottom menu stay visible, so Home is
   // one tap away on the bottom menu; no navigation from this button.)
   if (backBtn) backBtn.addEventListener('click', function () {
     picker.style.display = (picker.style.display === 'none') ? '' : 'none';
   });
-  // v9.3 (stability): fit the chat EXACTLY between the site's fixed top
+  // v9.4 (stability): fit the chat EXACTLY between the site's fixed top
   // header (#mla-topbar) and fixed bottom menu (#bottomNav), so the page
   // never scrolls and neither the header nor the menu ever moves/shakes.
   // Heights are measured at runtime (the theme can change them) and
   // re-measured on resize/orientationchange and shortly after load (the
-  // bottom menu can render late). Only on mobile (≤640px) — desktop keeps
-  // the centred 560px card. Missing chrome falls back to 0 for that side.
+  // bottom menu can render late). ALL widths — desktop too (the previous build gated
+  // this to ≤640px, which left the composer below the fold on desktop).
+  // Desktop keeps the centred 560px card look; only the height is fitted.
+  // Missing chrome falls back to 0 for that side.
   function fitChat() {
     var page = document.getElementById('mla-bot-page');
     if (!page) return;
-    if (window.innerWidth > 640) { page.style.height = ''; return; }
     var topH = 0, botH = 0;
     var topEl = document.getElementById('mla-topbar');
     var botEl = document.getElementById('bottomNav');
@@ -71,7 +72,7 @@
     page.style.height = 'calc(100vh - ' + total + 'px)';
     page.style.height = 'calc(100dvh - ' + total + 'px)';
   }
-  // v9.3: hide the floating "Spin Now" wheel button on this page — it is a
+  // v9.4: hide the floating "Spin Now" wheel button on this page — it is a
   // fixed floating button that would overlap the full-screen chat. It has
   // no stable id/class, so find it by its visible text and hide the nearest
   // fixed-position ancestor (that also removes its "Remove" ×, part of the
@@ -95,7 +96,7 @@
     } catch (e) {}
   }
   // v9.0 (Telegram): chat-list avatar colours, cycled per bot (Telegram
-  // gives each chat its own avatar colour). v9.3: richer gradients
+  // gives each chat its own avatar colour). v9.4: richer gradients
   // (Telegram-blue family) + a soft ring/shadow on the avatar itself.
   var AVATAR_COLORS = ['linear-gradient(135deg,#4db2e8,#1a8fc4)', 'linear-gradient(135deg,#66bb6a,#2e7d32)', 'linear-gradient(135deg,#ab47bc,#6a1b9a)', 'linear-gradient(135deg,#ffa726,#ef6c00)', 'linear-gradient(135deg,#26c6da,#00838f)', 'linear-gradient(135deg,#ec407a,#ad1457)', 'linear-gradient(135deg,#ef5350,#c62828)', 'linear-gradient(135deg,#7e57c2,#4527a0)'];
   function avatarInitial(b) {
@@ -112,7 +113,7 @@
   function saveHistory() {
     try { localStorage.setItem(historyKey(), JSON.stringify(history.slice(-HISTORY_MAX))); } catch (e) {}
   }
-  // v9.3 (stability): smooth-scroll to the bottom only for NEW messages,
+  // v9.4 (stability): smooth-scroll to the bottom only for NEW messages,
   // and only when the visitor is already near the bottom — so a new
   // message never yanks the view while they scroll up to read older
   // messages. History renders (renderHistory/setSession) jump instantly
@@ -166,18 +167,18 @@
     var isLeft = (m.from === 'owner' || m.from === 'bot');
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;flex-direction:column;gap:6px;' + (isLeft ? 'align-items:flex-start;' : 'align-items:flex-end;');
-    // v9.3: only NEW messages get the entrance animation (fade + tiny rise);
+    // v9.4: only NEW messages get the entrance animation (fade + tiny rise);
     // history re-renders (save === false) stay still — no whole-list flash.
     if (save !== false) row.className = 'mla-msg-in';
     // v9.0 (Telegram bubble): received = white, sent = light Telegram blue
     // (#d6e9f8); rounded 12px with a small tail on the sender side; soft
     // shadow; dark text. The timestamp sits bottom-right inside the bubble
     // (tiny grey); sent messages get blue ✓✓ ticks after the time.
-    // v9.3 (premium): 14px radius, richer sent blue (#cde9f8), layered
+    // v9.4 (premium): 14px radius, richer sent blue (#cde9f8), layered
     // soft shadow, near-black #111 text, bubbles capped at 75% width and
     // long words wrap anywhere so nothing can push the layout sideways.
-    // v9.3 (theme): ALL colours are CSS variables (defined in the snippet's
-    // <style>) so the bubbles follow the site's dark/light toggle live —
+    // v9.4 (theme): ALL colours are CSS variables (defined in the plugin's wp_head
+    // <style id="mla-bot-page-css">) so the bubbles follow the site's dark/light toggle live —
     // no hardcoded theme colours here.
     var b = document.createElement('div');
     b.style.cssText = 'max-width:75%;padding:8px 12px;border-radius:14px;font-size:15px;line-height:1.45;word-break:break-word;overflow-wrap:anywhere;box-shadow:0 1px 2px var(--mla-sh-a),0 4px 12px var(--mla-sh-b);' +
@@ -213,7 +214,7 @@
   // stacked buttons attached under the message text (light blue-grey
   // background #e8f1f8, Telegram-blue text, rounded corners); a row of
   // buttons stays side-by-side in one row (equal widths).
-  // v9.3 (theme): colours are CSS variables — dark mode uses Telegram dark
+  // v9.4 (theme): colours are CSS variables — dark mode uses Telegram dark
   // (#2b5278 background, #64b5ef text) and follows the toggle live.
   function renderButtons(bubbleEl, buttons, tgMsgId) {
     var div = document.createElement('div');
@@ -226,7 +227,7 @@
         var chip = document.createElement('button');
         chip.type = 'button';
         chip.textContent = btn.text;
-        // v9.3: .mla-ibtn gives the press feedback (scale + darken) from the
+        // v9.4: .mla-ibtn gives the press feedback (scale + darken) from the
         // snippet's <style> block; the inline shadow keeps it soft even if
         // that block is ever missing.
         chip.className = 'mla-ibtn';
@@ -265,7 +266,7 @@
   }
   // v9.0 (Telegram): system lines are centered grey pills, like Telegram's
   // date/service messages — small, rounded, grey text on a light pill.
-  // v9.3 (theme): colours are CSS variables (dark: #17212b pill, #7f91a4 text).
+  // v9.4 (theme): colours are CSS variables (dark: #17212b pill, #7f91a4 text).
   function addSys(text) {
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;justify-content:center;margin:4px 0;';
@@ -352,7 +353,7 @@
     if (b) {
       titleEl.textContent = b.name || b.username;
       avatarEl.textContent = avatarInitial(b);
-      subEl.textContent = '@' + b.username + ' • online • v9.3';
+      subEl.textContent = '@' + b.username + ' • online • v9.4';
       subEl.style.color = '#0088cc';
       addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
     }
@@ -390,7 +391,7 @@
         chip.title = sendText;
       }
       chip.style.cssText = 'flex:0 0 auto;padding:6px 12px;border-radius:16px;font-size:13px;font-family:inherit;cursor:pointer;border:none;background:var(--mla-chip-bg);color:var(--mla-chip-text);box-shadow:0 1px 3px var(--mla-sh-a);';
-      // v9.3: .mla-chip gives the gentle press (scale + darken) from the
+      // v9.4: .mla-chip gives the gentle press (scale + darken) from the
       // snippet's <style> block.
       chip.className = 'mla-chip';
       chip.addEventListener('click', function () { send(sendText); });
@@ -425,7 +426,7 @@
             if (b) {
               titleEl.textContent = b.name || b.username;
               avatarEl.textContent = avatarInitial(b);
-              subEl.textContent = '@' + b.username + ' • online • v9.3';
+              subEl.textContent = '@' + b.username + ' • online • v9.4';
               subEl.style.color = '#0088cc';
             }
             fetchCommands(selectedBot);
@@ -486,7 +487,7 @@
     input.value = '';
     send(text);
   });
-  // v9.3: fit the chat between the fixed header + bottom menu, and hide the
+  // v9.4: fit the chat between the fixed header + bottom menu, and hide the
   // floating Spin Now button. Re-fit on resize/orientationchange and again
   // shortly after load (the bottom menu can render late, after this script).
   fitChat();
