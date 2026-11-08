@@ -223,6 +223,7 @@
       .then(function (d) {
         if (d && d.url) { window.open(d.url, '_blank'); return; }
         if (d && d.ok) fetchHistory();
+        else if (d && d.error === 'blocked') addSys('এই কমান্ডটি বন্ধ আছে।');
         else addSys('বাটন কাজ করেনি। আবার চেষ্টা করুন।');
       })
       .catch(function () { addSys('Network error. Please try again.'); });
