@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MLA Bots — Admin Panel
  * Description: WordPress admin panel (wp-admin only) to manage the connected Telegram income bots and the Telegram user accounts that power the userbot bridge. Saves to wp_options and syncs to the Render live-chat server. Never a user page.
- * Version: 1.1.3
+ * Version: 1.1.4
  * Author: MLA
  *
  * MLA Bots — Admin Panel (wp-admin only, NEVER a user page)
@@ -24,6 +24,12 @@
  * page re-syncs the pool automatically. A new account is added by phone +
  * OTP (the OTP goes to that phone); the returned session string is saved
  * into wp_options straight away.
+ *
+ * FRONT-END (v9.1): this plugin also enqueues the MLA Bot page's chat
+ * JavaScript (bot-page-script.js) in the footer, only on page 1777. The
+ * page block holds HTML + CSS only — an inline <script> there never runs
+ * because the theme loads page content client-side. See the
+ * wp_enqueue_scripts hook below.
  *
  * SECURITY: The sync secret (ADMIN_BOTS_SECRET) is embedded here and in the
  * Render env vars only. This snippet is visible ONLY inside wp-admin to
@@ -168,6 +174,32 @@ add_action('mla_bots_hourly_sync', function () {
     $r = mla_bots_sync_to_server();
     if (!empty($r['ok'])) update_option(MLA_BOTS_LAST_SYNC_OPTION, time());
     // On failure: stay silent — the next hourly run retries.
+});
+
+// --- v9.1: front-end chat script for the MLA Bot page (?page_id=1777) ---
+// The page holds its HTML + CSS in a Custom HTML block, but the theme loads
+// page content client-side (PJAX-style), which leaves an inline <script>
+// inside that block inert — the v9.0 Telegram design showed, yet the bot
+// picker never populated and the form submitted as a plain form. The chat
+// JavaScript therefore lives in its own file (bot-page-script.js, next to
+// this plugin file) and is enqueued here in the FOOTER, only on the MLA Bot
+// page, so WordPress outputs it as a real <script src> that the browser
+// always executes. is_page(1777) covers the page whether it is reached by
+// permalink or by ?page_id=1777 (and even if it were the front page). No
+// dependencies — the script is self-contained (it must NOT depend on
+// jQuery). Version '9.1' cache-busts after updates. If the JS file is
+// missing, nothing is enqueued (no fatal).
+add_action('wp_enqueue_scripts', function () {
+    if (!is_page(1777)) return;
+    $js_path = plugin_dir_path(__FILE__) . 'bot-page-script.js';
+    if (!file_exists($js_path)) return;
+    wp_enqueue_script(
+        'mla-bot-page-script',
+        plugin_dir_url(__FILE__) . 'bot-page-script.js',
+        array(),
+        '9.1',
+        true
+    );
 });
 
 // --- Admin menu page ---
