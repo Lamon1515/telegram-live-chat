@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MLA Bots — Admin Panel
  * Description: WordPress admin panel (wp-admin only) to manage the connected Telegram income bots and the Telegram user accounts that power the userbot bridge. Saves to wp_options and syncs to the Render live-chat server. Never a user page.
- * Version: 1.1.7
+ * Version: 1.1.8
  * Author: MLA
  *
  * MLA Bots — Admin Panel (wp-admin only, NEVER a user page)
@@ -25,7 +25,7 @@
  * OTP (the OTP goes to that phone); the returned session string is saved
  * into wp_options straight away.
  *
- * FRONT-END (v9.4): this plugin also enqueues the MLA Bot page's chat
+ * FRONT-END (v9.5): this plugin also enqueues the MLA Bot page's chat
  * JavaScript (bot-page-script.js) in the footer, only on page 1777. The
  * page block holds HTML + CSS only — an inline <script> there never runs
  * because the theme loads page content client-side. See the
@@ -176,7 +176,7 @@ add_action('mla_bots_hourly_sync', function () {
     // On failure: stay silent — the next hourly run retries.
 });
 
-// --- v9.4: front-end chat script for the MLA Bot page (?page_id=1777) ---
+// --- v9.5: front-end chat script for the MLA Bot page (?page_id=1777) ---
 // The page holds its HTML in a Custom HTML block (CSS now comes from this plugin's wp_head, v9.4), but the theme loads
 // page content client-side (PJAX-style), which leaves an inline <script>
 // inside that block inert — the v9.0 Telegram design showed, yet the bot
@@ -187,9 +187,9 @@ add_action('mla_bots_hourly_sync', function () {
 // always executes. is_page(1777) covers the page whether it is reached by
 // permalink or by ?page_id=1777 (and even if it were the front page). No
 // dependencies — the script is self-contained (it must NOT depend on
-// jQuery). Version '9.4' cache-busts after updates. If the JS file is
+// jQuery). Version '9.5' cache-busts after updates. If the JS file is
 // missing, nothing is enqueued (no fatal).
-// --- v9.4: MLA Bot page CSS via wp_head (page 1777 only) ---
+// --- v9.5: MLA Bot page CSS via wp_head (page 1777 only) ---
 // The previous build put ALL of this CSS in a <style> block inside the Custom HTML block
 // snippet. WordPress/Elementor strips (or never applies) <style> inside
 // post content, so NONE of it reached the live page: the CSS variables
@@ -207,7 +207,7 @@ add_action('wp_head', function () {
     echo '<style id="mla-bot-page-css">' . "\n";
     echo <<<'MLA_BOT_PAGE_CSS'
 
-/* ---- v9.4 theme variables ---- */
+/* ---- v9.5 theme variables ---- */
 /* Light (Telegram light palette). :root carries the light values so the
    chat is never unstyled; html[data-theme="light"] states it explicitly. */
 :root, html[data-theme="light"]{
@@ -222,7 +222,6 @@ add_action('wp_head', function () {
   --mla-picker-active:#e8f1f8;
   --mla-hdr-bg:rgba(255,255,255,.88); --mla-hdr-fallback:#fff;
   --mla-sh-a:rgba(16,24,40,.10); --mla-sh-b:rgba(16,24,40,.06);
-  --mla-dot:rgba(0,0,0,0.05);
 }
 /* Dark (Telegram dark palette). The site REMOVES data-theme for dark —
    there is no dark value, so dark is html:not([data-theme="light"]). */
@@ -238,12 +237,11 @@ html:not([data-theme="light"]){
   --mla-picker-active:#1f2c3a;
   --mla-hdr-bg:rgba(23,33,43,.88); --mla-hdr-fallback:#17212b;
   --mla-sh-a:rgba(0,0,0,.35); --mla-sh-b:rgba(0,0,0,.25);
-  --mla-dot:rgba(255,255,255,0.04);
 }
-/* ---- v9.4: this page never scrolls — the chat list scrolls internally.
+/* ---- v9.5: this page never scrolls — the chat list scrolls internally.
    Scoped to this page only, so the fixed header + bottom menu never move. */
 body.page-id-1777{overflow:hidden;}
-/* ---- v9.4: keep the site chrome VISIBLE but pinned stable on this page.
+/* ---- v9.5: keep the site chrome VISIBLE but pinned stable on this page.
    The bottom menu has a `bottom` transition that slides it (the shake);
    pin it at bottom:0 and kill the transition. Same for the top header. */
 body.page-id-1777 #bottomNav{bottom:0!important;transition:none!important;}
@@ -276,9 +274,9 @@ body.page-id-1777 #mla-topbar{transition:none!important;}
 @media (prefers-reduced-motion:reduce){#mla-bot-page .mla-msg-in{animation:none;}}
 /* ---- Mobile (≤640px): the chat fills the space between the fixed site
    header and the fixed bottom menu. Height is set exactly by JS
-   (calc(100dvh - headerH - bottomNavH)); the CSS 100dvh here is only the
-   fallback before JS runs. NOTE: no !important on height — the JS inline
-   height must win over this rule. ---- */
+   (viewport height - container top offset - bottomNavH); the CSS 100dvh
+   here is only the fallback before JS runs. NOTE: no !important on
+   height — the JS inline height must win over this rule. ---- */
 @media (max-width:640px){
   #mla-bot-page{max-width:100%!important;margin:0!important;height:100vh;height:100dvh;}
   #mla-bot-list{height:auto!important;flex:1 1 auto!important;min-height:0!important;}
@@ -295,7 +293,7 @@ add_action('wp_enqueue_scripts', function () {
         'mla-bot-page-script',
         plugin_dir_url(__FILE__) . 'bot-page-script.js',
         array(),
-        '9.4',
+        '9.5',
         true
     );
 });
