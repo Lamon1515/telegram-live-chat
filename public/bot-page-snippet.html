@@ -10,7 +10,7 @@
     <div style="width:42px;height:42px;border-radius:50%;background:#0088cc;color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;">🤖</div>
     <div>
       <div id="mla-bot-title" style="font-weight:700;font-size:16px;">MLA Bot</div>
-      <div id="mla-bot-sub" style="font-size:12px;color:#6b7280;">বট বেছে নিন • v8</div>
+      <div id="mla-bot-sub" style="font-size:12px;color:#6b7280;">বট বেছে নিন • v8.1</div>
     </div>
   </div>
   <div id="mla-bot-picker" style="display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid #e5e7eb;overflow-x:auto;"></div>
@@ -225,7 +225,7 @@
     var b = bots.find(function (x) { return x.username === username; });
     if (b) {
       titleEl.textContent = b.name || b.username;
-      subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v8';
+      subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v8.1';
       addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
     }
     renderPicker();
@@ -240,18 +240,27 @@
   // commands with the admin's custom commands, minus blocked ones. When
   // /start itself is blocked, no fallback chip is shown — tapping a blocked
   // command would only show "এই কমান্ডটি বন্ধ আছে।".)
+  // (v8.1: each entry carries `text` — the EXACT text to send. Slash
+  // commands send '/name'; plain-text customs (e.g. "ব্যালেন্স") send the
+  // text as-is, and the chip shows the label instead of a '/' command.)
   function renderCommandChips(cmds, blocked) {
     cmdsEl.innerHTML = '';
     var blockedList = blocked || [];
     var startBlocked = blockedList.some(function (b) { return String(b).toLowerCase() === '/start'; });
     if (!cmds.length && !startBlocked) cmds = [{ command: 'start', description: '' }];
     cmds.forEach(function (c) {
+      var sendText = c.text || ('/' + c.command);
       var chip = document.createElement('button');
       chip.type = 'button';
-      chip.textContent = '/' + c.command + (c.description ? ' — ' + c.description : '');
-      chip.title = c.description || ('/' + c.command);
+      if (sendText.charAt(0) === '/') {
+        chip.textContent = '/' + c.command + (c.description ? ' — ' + c.description : '');
+        chip.title = c.description || ('/' + c.command);
+      } else {
+        chip.textContent = c.description || sendText;
+        chip.title = sendText;
+      }
       chip.style.cssText = 'flex:0 0 auto;padding:7px 12px;border-radius:999px;font-size:13px;cursor:pointer;border:1px solid #d1d5db;background:#f3f4f6;color:#111827;';
-      chip.addEventListener('click', function () { send('/' + c.command); });
+      chip.addEventListener('click', function () { send(sendText); });
       cmdsEl.appendChild(chip);
     });
   }
@@ -280,7 +289,7 @@
           }
           if (selectedBot) {
             var b = bots.find(function (x) { return x.username === selectedBot; });
-            if (b) { titleEl.textContent = b.name || b.username; subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v8'; }
+            if (b) { titleEl.textContent = b.name || b.username; subEl.textContent = '@' + b.username + ' • সাইট থেকেই বট চালান • v8.1'; }
             fetchCommands(selectedBot);
           }
           renderPicker();
