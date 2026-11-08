@@ -1,17 +1,36 @@
 <?php
 /**
+ * Plugin Name: MLA Bots — Admin Panel
+ * Description: WordPress admin panel (wp-admin only) to manage the connected Telegram income bots and the Telegram user accounts that power the userbot bridge. Saves to wp_options and syncs to the Render live-chat server. Never a user page.
+ * Version: 1.1.2
+ * Author: MLA
+ *
  * MLA Bots — Admin Panel (wp-admin only, NEVER a user page)
  *
  * Adds a "MLA Bots" page under the WordPress admin menu where the site owner
- * manages the connected Telegram income bots (username, name, description,
- * how_to_earn). The list is saved in wp_options (mla_connected_bots) and
- * pushed to the Render live-chat server via POST /api/admin/bots/sync so the
- * GramJS userbot bridge can operate those bots from the site.
+ * manages (a) the connected Telegram income bots (username, name,
+ * description, how_to_earn, plus v8 per-bot command control) and (b) the
+ * Telegram user accounts that power the userbot bridge (multi-account pool).
+ *
+ * BOTS: the list is saved in wp_options (mla_connected_bots) and pushed to
+ * the Render live-chat server via POST /api/admin/bots/sync so the GramJS
+ * userbot bridge can operate those bots from the site.
+ *
+ * ACCOUNTS: the session strings are saved in wp_options
+ * (mla_telegram_sessions) and pushed to the Render server via POST
+ * /api/admin/accounts/sync (server-side, from PHP — the session strings
+ * NEVER appear in the page HTML, the browser, or any log). The server keeps
+ * them in userbot-sessions.json; a deploy wipes that file, and opening this
+ * page re-syncs the pool automatically. A new account is added by phone +
+ * OTP (the OTP goes to that phone); the returned session string is saved
+ * into wp_options straight away.
  *
  * SECURITY: The sync secret (ADMIN_BOTS_SECRET) is embedded here and in the
  * Render env vars only. This snippet is visible ONLY inside wp-admin to
  * administrators — it is never on a user-facing page. Do NOT copy this code
- * into a public page or the theme.
+ * into a public page or the theme. Session strings are secrets: they are
+ * never rendered, never logged, and only ever sent to Render (via the
+ * server-side sync) or to wp-admin (to be stored).
  *
  * Install: Code Snippets → Add New → paste this whole file → "Only run in
  * administration area" → Save & Activate. (Or add to a small plugin.)
@@ -23,24 +42,133 @@ if (!defined('ABSPATH')) exit;
 define('MLA_BOTS_RENDER_URL', 'https://telegram-live-chat-ej29.onrender.com');
 define('MLA_BOTS_SYNC_SECRET', '0db415fe555d521b53a147f4f9e8423b201ed29ff447d08c'); // ADMIN_BOTS_SECRET — same value as the Render env var
 define('MLA_BOTS_OPTION', 'mla_connected_bots');
+define('MLA_BOTS_SESSIONS_OPTION', 'mla_telegram_sessions');
+define('MLA_BOTS_LAST_SYNC_OPTION', 'mla_bots_last_sync'); // Unix timestamp of the last successful bots sync to Render
+
+// --- v8: clean one bot entry (username, name, description, how_to_earn,
+// custom_commands, blocked_commands). Custom commands: [{label, command}],
+// label <= 30 chars, max 20. v8.1: the command is the exact text to send —
+// a slash command ('/...', <= 32 chars) or plain text (<= 64 chars).
+// Blocked entries: slash ('/withdraw', <= 32 chars) or plain text
+// (<= 64 chars), max 20.
+function mla_bots_clean_one($b) {
+    if (!is_array($b)) return null;
+    $u = isset($b['username']) ? preg_replace('/^@/', '', sanitize_text_field($b['username'])) : '';
+    if (!preg_match('/^[A-Za-z0-9_]{5,32}$/', $u)) return null;
+    $custom = array();
+    if (isset($b['custom_commands']) && is_array($b['custom_commands'])) {
+        foreach (array_slice($b['custom_commands'], 0, 20) as $c) {
+            if (!is_array($c)) continue;
+            $label = isset($c['label']) ? sanitize_text_field($c['label']) : '';
+            $cmd = isset($c['command']) ? sanitize_text_field($c['command']) : '';
+            if ($label === '' || $cmd === '') continue;
+            if (strpos($cmd, '/') === 0) {
+                if (!preg_match('/^\/[A-Za-z0-9_]{1,31}$/', $cmd) || strlen($cmd) > 32) continue;
+            } elseif (mb_strlen($cmd) > 64) continue;
+            $label = mb_substr($label, 0, 30);
+            $dup = false;
+            foreach ($custom as $o) { if (strtolower($o['command']) === strtolower($cmd)) { $dup = true; break; } }
+            if ($dup) continue;
+            $custom[] = array('label' => $label, 'command' => $cmd);
+        }
+    }
+    $blocked = array();
+    if (isset($b['blocked_commands']) && is_array($b['blocked_commands'])) {
+        foreach (array_slice($b['blocked_commands'], 0, 20) as $c) {
+            $cmd = strtolower(sanitize_text_field($c));
+            if ($cmd === '') continue;
+            if (strpos($cmd, '/') === 0) {
+                if (!preg_match('/^\/[a-z0-9_]{1,31}$/', $cmd) || strlen($cmd) > 32) continue;
+            } elseif (mb_strlen($cmd) > 64) continue;
+            if (!in_array($cmd, $blocked, true)) $blocked[] = $cmd;
+        }
+    }
+    return array(
+        'username'        => $u,
+        'name'            => isset($b['name']) ? sanitize_text_field($b['name']) : $u,
+        'description'     => isset($b['description']) ? sanitize_textarea_field($b['description']) : '',
+        'how_to_earn'     => isset($b['how_to_earn']) ? sanitize_textarea_field($b['how_to_earn']) : '',
+        'custom_commands' => $custom,
+        'blocked_commands'=> $blocked,
+    );
+}
 
 function mla_bots_get_list() {
     $bots = get_option(MLA_BOTS_OPTION, array());
     if (!is_array($bots)) $bots = array();
     $clean = array();
     foreach ($bots as $b) {
-        if (!is_array($b)) continue;
-        $u = isset($b['username']) ? preg_replace('/^@/', '', sanitize_text_field($b['username'])) : '';
-        if (!preg_match('/^[A-Za-z0-9_]{5,32}$/', $u)) continue;
-        $clean[] = array(
-            'username'    => $u,
-            'name'        => isset($b['name']) ? sanitize_text_field($b['name']) : $u,
-            'description' => isset($b['description']) ? sanitize_textarea_field($b['description']) : '',
-            'how_to_earn' => isset($b['how_to_earn']) ? sanitize_textarea_field($b['how_to_earn']) : '',
-        );
+        $c = mla_bots_clean_one($b);
+        if ($c) $clean[] = $c;
     }
     return $clean;
 }
+
+// The stored Telegram userbot sessions (opaque strings). Returned only to
+// server-side code — NEVER printed into the page.
+function mla_bots_get_sessions() {
+    $s = get_option(MLA_BOTS_SESSIONS_OPTION, array());
+    if (!is_array($s)) return array();
+    $out = array();
+    foreach ($s as $v) {
+        if (is_string($v) && trim($v) !== '' && !in_array(trim($v), $out, true)) $out[] = trim($v);
+    }
+    return $out;
+}
+
+// Push the stored sessions to the Render server (server-side, via
+// wp_remote_post) so the userbot pool is restored after a deploy. The
+// session strings never touch the browser. Returns
+// array('ok'=>bool, 'count'=>int, 'accounts'=>array, 'error'=>string).
+function mla_accounts_sync_to_server() {
+    $sessions = mla_bots_get_sessions();
+    $res = wp_remote_post(MLA_BOTS_RENDER_URL . '/api/admin/accounts/sync', array(
+        'headers' => array('Content-Type' => 'application/json'),
+        'body'    => wp_json_encode(array('sessions' => $sessions, 'secret' => MLA_BOTS_SYNC_SECRET)),
+        'timeout' => 45,
+    ));
+    if (is_wp_error($res)) return array('ok' => false, 'error' => $res->get_error_message());
+    $body = json_decode(wp_remote_retrieve_body($res), true);
+    if (!is_array($body) || empty($body['ok'])) {
+        return array('ok' => false, 'error' => isset($body['error']) ? $body['error'] : 'sync failed');
+    }
+    return array('ok' => true, 'count' => isset($body['count']) ? (int) $body['count'] : 0, 'accounts' => isset($body['accounts']) ? $body['accounts'] : array());
+}
+
+// Push the stored bot list to the Render server (server-side, via
+// wp_remote_post) so the bot config (including custom/blocked commands)
+// survives a Render restart/deploy. Returns
+// array('ok'=>bool, 'count'=>int, 'error'=>string).
+function mla_bots_sync_to_server() {
+    $bots = mla_bots_get_list();
+    $res = wp_remote_post(MLA_BOTS_RENDER_URL . '/api/admin/bots/sync', array(
+        'headers' => array('Content-Type' => 'application/json'),
+        'body'    => wp_json_encode(array('bots' => $bots, 'secret' => MLA_BOTS_SYNC_SECRET)),
+        'timeout' => 45,
+    ));
+    if (is_wp_error($res)) return array('ok' => false, 'error' => $res->get_error_message());
+    $body = json_decode(wp_remote_retrieve_body($res), true);
+    if (!is_array($body) || empty($body['ok'])) {
+        return array('ok' => false, 'error' => isset($body['error']) ? $body['error'] : 'sync failed');
+    }
+    return array('ok' => true, 'count' => isset($body['count']) ? (int) $body['count'] : 0);
+}
+
+// --- v8.2: hourly sync (wp-cron) — the bot list is pushed to Render every
+// hour so a server restart/deploy cannot lose the saved custom/blocked
+// commands. Silent on failure (Render may be briefly unreachable); the next
+// hour retries. The admin page auto-sync on open covers the immediate case.
+register_activation_hook(__FILE__, function () {
+    if (!wp_next_scheduled('mla_bots_hourly_sync')) wp_schedule_event(time(), 'hourly', 'mla_bots_hourly_sync');
+});
+register_deactivation_hook(__FILE__, function () {
+    wp_clear_scheduled_hook('mla_bots_hourly_sync');
+});
+add_action('mla_bots_hourly_sync', function () {
+    $r = mla_bots_sync_to_server();
+    if (!empty($r['ok'])) update_option(MLA_BOTS_LAST_SYNC_OPTION, time());
+    // On failure: stay silent — the next hourly run retries.
+});
 
 // --- Admin menu page ---
 add_action('admin_menu', function () {
@@ -62,28 +190,101 @@ add_action('wp_ajax_mla_bots_save', function () {
     $raw = isset($_POST['bots']) ? wp_unslash($_POST['bots']) : '[]';
     $bots = json_decode($raw, true);
     if (!is_array($bots)) wp_send_json_error('bad bots', 400);
-    // Reuse the same cleaning as mla_bots_get_list by saving raw then reading back.
     update_option(MLA_BOTS_OPTION, $bots);
     $clean = mla_bots_get_list();
     update_option(MLA_BOTS_OPTION, $clean);
     wp_send_json_success(array('bots' => $clean, 'count' => count($clean)));
 });
 
+// --- AJAX: hand out a fresh nonce (admin only). v8.2: the save retries
+// once with a fresh nonce when the page has been open so long that the
+// original nonce expired (WordPress nonces last ~12h — an iPhone tab left
+// open easily outlives one). This action deliberately does NOT check the
+// old nonce (that is the point — it is stale); the capability check is the
+// real gate, and a nonce by itself changes no state.
+add_action('wp_ajax_mla_bots_fresh_nonce', function () {
+    if (!current_user_can('manage_options')) wp_send_json_error('forbidden', 403);
+    wp_send_json_success(array('nonce' => wp_create_nonce('mla_bots_nonce')));
+});
+
+// --- AJAX: record that a manual sync to Render just succeeded (admin
+// only). The browser calls this after a successful syncToServer so the
+// "last sync" line on the page stays truthful.
+add_action('wp_ajax_mla_bots_mark_synced', function () {
+    if (!current_user_can('manage_options')) wp_send_json_error('forbidden', 403);
+    check_ajax_referer('mla_bots_nonce', 'nonce');
+    $ts = time();
+    update_option(MLA_BOTS_LAST_SYNC_OPTION, $ts);
+    wp_send_json_success(array('last_sync' => $ts, 'last_sync_text' => date_i18n('Y-m-d H:i', $ts)));
+});
+
+// --- AJAX: save ONE new userbot session string into wp_options (admin only).
+// Called by the browser right after a successful OTP verify. The session
+// string is accepted here and stored — it is never echoed back.
+add_action('wp_ajax_mla_bots_save_session', function () {
+    if (!current_user_can('manage_options')) wp_send_json_error('forbidden', 403);
+    check_ajax_referer('mla_bots_nonce', 'nonce');
+    $session = isset($_POST['session']) ? sanitize_text_field(wp_unslash($_POST['session'])) : '';
+    if ($session === '') wp_send_json_error('bad session', 400);
+    $sessions = mla_bots_get_sessions();
+    if (!in_array($session, $sessions, true)) {
+        $sessions[] = $session;
+        update_option(MLA_BOTS_SESSIONS_OPTION, $sessions);
+    }
+    wp_send_json_success(array('count' => count($sessions)));
+});
+
+// --- AJAX: server-side accounts sync (admin only). Reads the sessions from
+// wp_options in PHP and pushes them to Render. The browser never sees them.
+add_action('wp_ajax_mla_accounts_sync', function () {
+    if (!current_user_can('manage_options')) wp_send_json_error('forbidden', 403);
+    check_ajax_referer('mla_bots_nonce', 'nonce');
+    $r = mla_accounts_sync_to_server();
+    if (!empty($r['ok'])) wp_send_json_success(array('count' => $r['count'], 'accounts' => $r['accounts']));
+    wp_send_json_error(isset($r['error']) ? $r['error'] : 'sync failed', 500);
+});
+
+// --- AJAX: remove one stored session by its fingerprint (admin only).
+// The fingerprint is the first 12 hex chars of SHA-256(session). The
+// browser sends only the fingerprint — never the session string.
+add_action('wp_ajax_mla_accounts_remove', function () {
+    if (!current_user_can('manage_options')) wp_send_json_error('forbidden', 403);
+    check_ajax_referer('mla_bots_nonce', 'nonce');
+    $fp = isset($_POST['fingerprint']) ? sanitize_text_field(wp_unslash($_POST['fingerprint'])) : '';
+    if (!preg_match('/^[0-9a-f]{12}$/', $fp)) wp_send_json_error('bad fingerprint', 400);
+    $sessions = mla_bots_get_sessions();
+    $kept = array();
+    foreach ($sessions as $s) {
+        if (substr(hash('sha256', $s), 0, 12) === $fp) continue; // drop this one
+        $kept[] = $s;
+    }
+    update_option(MLA_BOTS_SESSIONS_OPTION, array_values($kept));
+    wp_send_json_success(array('count' => count($kept)));
+});
+
 function mla_bots_admin_page() {
     if (!current_user_can('manage_options')) { wp_die('Forbidden'); }
+    // v8.2: make sure the hourly sync is scheduled even if the plugin was
+    // updated by file-replace without the activation hook firing.
+    if (!wp_next_scheduled('mla_bots_hourly_sync')) wp_schedule_event(time(), 'hourly', 'mla_bots_hourly_sync');
     $bots = mla_bots_get_list();
     $bots_json = wp_json_encode($bots);
+    $has_sessions = count(mla_bots_get_sessions()) > 0 ? '1' : '0';
     $render_url = esc_js(MLA_BOTS_RENDER_URL);
     $secret = esc_js(MLA_BOTS_SYNC_SECRET);
     $nonce = wp_create_nonce('mla_bots_nonce');
     $ajax_url = esc_js(admin_url('admin-ajax.php'));
+    $last_sync = (int) get_option(MLA_BOTS_LAST_SYNC_OPTION, 0);
+    $last_sync_text = $last_sync ? date_i18n('Y-m-d H:i', $last_sync) : 'এখনো হয়নি';
     ?>
     <div class="wrap">
         <h1>🤖 MLA Bots — Telegram ইনকাম বট</h1>
         <p>এখানে যেসব বট যুক্ত করবেন, সাইটের ভিজিটররা সেগুলো সাইট থেকেই চালাতে পারবে। বট যুক্ত করলেই সার্ভারে (Render) পাঠিয়ে দেওয়া হয় — আলাদা করে কিছু করতে হবে না।</p>
         <p id="mla-bots-status" style="font-weight:bold;"></p>
+        <p id="mla-bots-last-sync" style="color:#666;">শেষ সিঙ্ক: <?php echo esc_html($last_sync_text); ?> <span class="description">(প্রতি ঘণ্টায় নিজে থেকেও সিঙ্ক হয় — সার্ভার রিস্টার্ট হলেও কমান্ড হারাবে না।)</span></p>
 
         <h2>➕ নতুন বট যুক্ত করুন</h2>
+        <p id="mla-bot-edit-banner" style="display:none;background:#fff8e1;border-left:4px solid #dba617;padding:10px 12px;font-weight:bold;"></p>
         <table class="form-table">
             <tr><th><label for="mla-bot-username">Bot username *</label></th>
                 <td><input id="mla-bot-username" type="text" placeholder="@SomeBot" style="width:300px"> <span class="description">@ ছাড়াও লিখতে পারেন</span></td></tr>
@@ -93,16 +294,45 @@ function mla_bots_admin_page() {
                 <td><textarea id="mla-bot-desc" rows="2" cols="50" placeholder="এই বট থেকে কিভাবে আয় হয়"></textarea></td></tr>
             <tr><th><label for="mla-bot-earn">কিভাবে আয়</label></th>
                 <td><textarea id="mla-bot-earn" rows="2" cols="50" placeholder="যেমন: টাস্ক করুন, রেফার করুন"></textarea></td></tr>
+            <tr><th><label for="mla-bot-custom">কাস্টম কমান্ড (v8.2)</label></th>
+                <td><textarea id="mla-bot-custom" rows="3" cols="50" placeholder="যেমন: ব্যালেন্স|/balance — প্রতি লাইনে একটি"></textarea>
+                <br><span class="description">এই ঘরটি খালি থাকে — নিজে লিখতে হবে। প্রতি লাইনে একটি: লেবেল|কমান্ড। স্ল্যাশ (/) দিয়ে শুরু হলে কমান্ড, নইলে সাধারণ লেখা — '|' ছাড়া শুধু লেখা লিখলেও চলবে (যেমন শুধু "ব্যালেন্স" লিখলে চিপে ট্যাপ করলে ঠিক ওই লেখাটাই যাবে)। সর্বোচ্চ ২০টি।</span></td></tr>
+            <tr><th><label for="mla-bot-blocked">বন্ধ কমান্ড (v8.2)</label></th>
+                <td><input id="mla-bot-blocked" type="text" placeholder="যেমন: /withdraw, /admin" style="width:300px">
+                <br><span class="description">এই ঘরটি খালি থাকে — নিজে লিখতে হবে। কমা বা নতুন লাইন দিয়ে আলাদা করুন। স্ল্যাশ কমান্ড (/withdraw) বা সাধারণ লেখা — যেটা লিখবেন সেটাই ব্লক হবে; ভিজিটর পাঠালে "এই কমান্ডটি বন্ধ আছে।" দেখাবে। সর্বোচ্চ ২০টি।</span></td></tr>
         </table>
-        <p><button id="mla-bot-add" class="button button-primary">➕ বট যুক্ত করুন</button></p>
+        <p><button id="mla-bot-add" class="button button-primary">➕ বট যুক্ত করুন</button>
+        <button id="mla-bot-cancel-edit" class="button" style="display:none">✕ সম্পাদনা বাতিল</button>
+        <br><span class="description">আগে থেকে যুক্ত বট বদলাতে তার পাশের ✏️ সম্পাদনা চাপুন — নতুন করে যুক্ত করলে হবে না।</span></p>
 
         <h2>📋 যুক্ত বটগুলো (<span id="mla-bot-count"><?php echo count($bots); ?></span>টি)</h2>
         <table class="widefat striped" id="mla-bot-table">
-            <thead><tr><th>Username</th><th>নাম</th><th>বিবরণ / কিভাবে আয়</th><th></th></tr></thead>
+            <thead><tr><th>Username</th><th>নাম</th><th>বিবরণ / কিভাবে আয়</th><th>কাস্টম / বন্ধ কমান্ড</th><th></th></tr></thead>
             <tbody id="mla-bot-list"></tbody>
         </table>
         <p><button id="mla-bot-sync" class="button">🔄 সার্ভারে আবার পাঠান (Sync)</button>
         <span class="description">সার্ভার রিস্টার্ট হলে এই বোতামে একবার ক্লিক করলেই বটগুলো আবার চালু হবে। এই পেজ খুললেই নিজে থেকেও Sync হয়।</span></p>
+
+        <hr>
+        <h2>📱 Telegram অ্যাকাউন্ট (Userbot Pool — v8)</h2>
+        <p>সাইট থেকে ইনকাম বট চালাতে যেসব Telegram অ্যাকাউন্ট ব্যবহার হবে। একটি অ্যাকাউন্ট বিজি/বন্ধ থাকলে অন্যটি নিজে থেকে কাজ নিয়ে নেবে (auto-shift)। নতুন অ্যাকাউন্ট যুক্ত করতে ফোন নম্বর দিয়ে OTP পাঠান, তারপর OTP দিন।</p>
+        <p id="mla-acc-status" style="font-weight:bold;"></p>
+        <table class="form-table">
+            <tr><th><label for="mla-acc-phone">ফোন নম্বর *</label></th>
+                <td><input id="mla-acc-phone" type="text" placeholder="+8801XXXXXXXXX" style="width:300px">
+                <button id="mla-acc-send-otp" class="button button-primary">📩 OTP পাঠান</button></td></tr>
+            <tr id="mla-acc-otp-row" style="display:none"><th><label for="mla-acc-otp">OTP কোড *</label></th>
+                <td><input id="mla-acc-otp" type="text" placeholder="Telegram-এ আসা ৫ সংখ্যার কোড" style="width:300px">
+                <button id="mla-acc-verify" class="button button-primary">✅ Verify করুন</button>
+                <span class="description">OTP ১০ মিনিটের মধ্যে দিতে হবে। ভুল কোড দিলে আবার নতুন OTP নিতে হবে।</span></td></tr>
+        </table>
+        <h3>🔗 যুক্ত অ্যাকাউন্টগুলো (<span id="mla-acc-count">0</span>টি)</h3>
+        <table class="widefat striped" id="mla-acc-table">
+            <thead><tr><th>অ্যাকাউন্ট</th><th>ফোন (মাস্কড)</th><th>স্ট্যাটাস</th><th>চলমান মেসেজ</th><th></th></tr></thead>
+            <tbody id="mla-acc-list"></tbody>
+        </table>
+        <p><button id="mla-acc-sync" class="button">🔄 অ্যাকাউন্ট Sync (সার্ভারে আবার পাঠান)</button>
+        <span class="description">সার্ভার রিস্টার্ট/ডেপ্লয় হলে এই পেজ খুললেই অ্যাকাউন্টগুলো নিজে থেকে আবার চালু হয়।</span></p>
     </div>
     <script>
     (function () {
@@ -110,42 +340,171 @@ function mla_bots_admin_page() {
         var SECRET = '<?php echo $secret; ?>';
         var AJAX_URL = '<?php echo $ajax_url; ?>';
         var NONCE = '<?php echo $nonce; ?>';
+        var HAS_SESSIONS = '<?php echo $has_sessions; ?>' === '1';
         var bots = <?php echo $bots_json; ?> || [];
+        var editingIndex = -1; // >=0 হলে Add বোতামটি ওই বটটি আপডেট করবে
         var statusEl = document.getElementById('mla-bots-status');
+        var lastSyncEl = document.getElementById('mla-bots-last-sync');
+        var editBannerEl = document.getElementById('mla-bot-edit-banner');
+        var addBtn = document.getElementById('mla-bot-add');
+        var syncBtn = document.getElementById('mla-bot-sync');
         var listEl = document.getElementById('mla-bot-list');
         var countEl = document.getElementById('mla-bot-count');
 
         function setStatus(msg, ok) {
             statusEl.textContent = msg;
             statusEl.style.color = ok ? 'green' : 'red';
+            // v8.2: errors must be unmissable — scroll the status into view.
+            if (!ok && msg && statusEl.scrollIntoView) statusEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
-        function renderList() {
-            countEl.textContent = bots.length;
-            listEl.innerHTML = '';
-            if (!bots.length) {
-                listEl.innerHTML = '<tr><td colspan="4">এখনো কোনো বট যুক্ত হয়নি। উপরের ফর্ম থেকে যুক্ত করুন।</td></tr>';
-                return;
+        // v8.2: disable the Save + Sync buttons while a save is in progress
+        // (prevents double-clicks / double-saves on a slow phone connection).
+        function setSaveBusy(busy) {
+            addBtn.disabled = busy;
+            syncBtn.disabled = busy;
+            addBtn.textContent = busy ? '⏳ সেভ হচ্ছে...' : (editingIndex >= 0 ? '💾 সংরক্ষণ করুন' : '➕ বট যুক্ত করুন');
+        }
+        // v8.2: fetch a fresh nonce (admin-only action; it does not need the
+        // old nonce — that is the point). Returns true when NONCE was updated.
+        function refreshNonce() {
+            var form = new FormData();
+            form.append('action', 'mla_bots_fresh_nonce');
+            return fetch(AJAX_URL, { method: 'POST', body: form, credentials: 'same-origin' })
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    if (d && d.success && d.data && d.data.nonce) { NONCE = d.data.nonce; return true; }
+                    return false;
+                })
+                .catch(function () { return false; });
+        }
+        // Did this save response fail because the nonce expired? WordPress
+        // check_ajax_referer dies with HTTP 403 and body "-1".
+        function isNonceFailure(res) {
+            if (res.status === 403) return true;
+            if (res.raw && String(res.raw).trim() === '-1') return true;
+            if (res.data && !res.data.success && res.data.data) {
+                var m = String(res.data.data).toLowerCase();
+                if (m.indexOf('nonce') !== -1 || m.indexOf('-1') !== -1) return true;
             }
-            bots.forEach(function (b, i) {
-                var tr = document.createElement('tr');
-                var desc = (b.description || '') + (b.how_to_earn ? ' — কিভাবে আয়: ' + b.how_to_earn : '');
-                tr.innerHTML = '<td><b>@' + esc(b.username) + '</b></td><td>' + esc(b.name || b.username) + '</td><td>' + esc(desc) + '</td>';
-                var td = document.createElement('td');
-                var del = document.createElement('button');
-                del.className = 'button';
-                del.textContent = '✕ মুছুন';
-                del.onclick = function () { removeBot(i); };
-                td.appendChild(del);
-                tr.appendChild(td);
-                listEl.appendChild(tr);
-            });
+            return false;
+        }
+        // v8.2: record a successful manual sync so the "শেষ সিঙ্ক" line stays
+        // truthful. Silent if it fails — the sync itself already happened.
+        function markSynced() {
+            var form = new FormData();
+            form.append('action', 'mla_bots_mark_synced');
+            form.append('nonce', NONCE);
+            return fetch(AJAX_URL, { method: 'POST', body: form, credentials: 'same-origin' })
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    if (d && d.success && d.data && d.data.last_sync_text) {
+                        lastSyncEl.innerHTML = 'শেষ সিঙ্ক: ' + d.data.last_sync_text + ' <span class="description">(প্রতি ঘণ্টায় নিজে থেকেও সিঙ্ক হয় — সার্ভার রিস্টার্ট হলেও কমান্ড হারাবে না।)</span>';
+                    }
+                })
+                .catch(function () { /* ignore — cosmetic only */ });
+        }
+        // Compare helpers for the verify step: only the command texts matter
+        // (labels are display-only, so a label truncation cannot cause a
+        // false mismatch). Sorted + lowercased, so order/case do not matter.
+        function normCustomCmds(list) {
+            return (list || []).map(function (c) { return String((c && c.command) || '').toLowerCase(); }).sort();
+        }
+        function normBlocked(list) {
+            return (list || []).map(function (c) { return String(c || '').toLowerCase(); }).sort();
         }
         function esc(s) {
             return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
                 return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
             });
         }
+        // "লেবেল|কমান্ড" প্রতি লাইন -> [{label, command}]. v8.1: a line with
+        // NO '|' is plain text — the whole line is both label and command
+        // (e.g. just "ব্যালেন্স" sends exactly that text). Slash commands
+        // must match /[A-Za-z0-9_]{1,31} (<=32 chars); plain text <=64 chars.
+        function parseCustom(text) {
+            var out = [];
+            String(text || '').split('\n').forEach(function (line) {
+                var raw = line.trim();
+                if (!raw) return;
+                var label, command;
+                var parts = raw.split('|');
+                if (parts.length >= 2) {
+                    label = parts[0].trim().slice(0, 30);
+                    command = parts.slice(1).join('|').trim();
+                } else {
+                    label = raw.slice(0, 30);
+                    command = raw;
+                }
+                if (!label || !command) return;
+                if (command.charAt(0) === '/') {
+                    if (!/^\/[A-Za-z0-9_]{1,31}$/.test(command) || command.length > 32) return;
+                } else if (command.length > 64) return;
+                if (out.some(function (o) { return o.command.toLowerCase() === command.toLowerCase(); })) return;
+                out.push({ label: label, command: command });
+            });
+            return out.slice(0, 20);
+        }
+        // "/withdraw, /admin" -> ['/withdraw', '/admin']. v8.1: split on
+        // commas AND newlines; plain text (no leading '/') is also allowed
+        // (non-empty, <=64 chars) and blocks that exact message text.
+        function parseBlocked(text) {
+            var out = [];
+            String(text || '').split(/[,\n]/).forEach(function (c) {
+                var cmd = c.trim().toLowerCase();
+                if (!cmd) return;
+                if (cmd.charAt(0) === '/') {
+                    if (!/^\/[a-z0-9_]{1,31}$/.test(cmd) || cmd.length > 32) return;
+                } else if (cmd.length > 64) return;
+                if (out.indexOf(cmd) === -1) out.push(cmd);
+            });
+            return out.slice(0, 20);
+        }
+        function formatCustom(list) {
+            return (list || []).map(function (c) {
+                var label = c.label || '', cmd = c.command || '';
+                return (label === cmd) ? cmd : (label + '|' + cmd);
+            }).join('\n');
+        }
+        function formatBlocked(list) {
+            return (list || []).join(', ');
+        }
+        function renderList() {
+            countEl.textContent = bots.length;
+            listEl.innerHTML = '';
+            if (!bots.length) {
+                listEl.innerHTML = '<tr><td colspan="5">এখনো কোনো বট যুক্ত হয়নি। উপরের ফর্ম থেকে যুক্ত করুন।</td></tr>';
+                return;
+            }
+            bots.forEach(function (b, i) {
+                var tr = document.createElement('tr');
+                var desc = (b.description || '') + (b.how_to_earn ? ' — কিভাবে আয়: ' + b.how_to_earn : '');
+                var customTxt = (b.custom_commands || []).map(function (c) { return (c.label || '') + ' (' + (c.command || '') + ')'; }).join(', ');
+                var blockedTxt = (b.blocked_commands || []).join(', ');
+                var cmds = '';
+                if (customTxt) cmds += 'কাস্টম: ' + customTxt + '<br>';
+                if (blockedTxt) cmds += 'বন্ধ: ' + blockedTxt;
+                if (!cmds) cmds = '—';
+                tr.innerHTML = '<td><b>@' + esc(b.username) + '</b></td><td>' + esc(b.name || b.username) + '</td><td>' + esc(desc) + '</td><td>' + esc(cmds).replace(/&lt;br&gt;/g, '<br>') + '</td>';
+                var td = document.createElement('td');
+                var edit = document.createElement('button');
+                edit.className = 'button';
+                edit.textContent = '✏️ সম্পাদনা';
+                edit.style.marginRight = '6px';
+                edit.onclick = function () { startEdit(i); };
+                var del = document.createElement('button');
+                del.className = 'button';
+                del.textContent = '✕ মুছুন';
+                del.onclick = function () { removeBot(i); };
+                td.appendChild(edit);
+                td.appendChild(del);
+                tr.appendChild(td);
+                listEl.appendChild(tr);
+            });
+        }
         // Push the current list to the Render server (secret-protected).
+        // Returns a promise of true/false (whether the server accepted it).
+        // It does NOT set the final status — the caller (save/verify) does,
+        // so the user sees the verified result, not just "sent".
         function syncToServer() {
             setStatus('⏳ সার্ভারে পাঠানো হচ্ছে...', true);
             return fetch(RENDER_URL + '/api/admin/bots/sync', {
@@ -153,38 +512,179 @@ function mla_bots_admin_page() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ bots: bots, secret: SECRET })
             }).then(function (r) { return r.json(); }).then(function (d) {
-                if (d && d.ok) {
-                    setStatus('✅ সেভ হয়েছে — সার্ভারে ' + d.count + 'টি বট চালু আছে।', true);
-                } else {
-                    setStatus('❌ সার্ভারে পাঠানো যায়নি: ' + (d && d.error ? d.error : 'অজানা ত্রুটি'), false);
-                }
-            }).catch(function (e) {
-                setStatus('❌ সার্ভারে পৌঁছানো যায়নি: ' + e.message, false);
-            });
+                if (d && d.ok) { markSynced(); return true; }
+                return false;
+            }).catch(function () { return false; });
         }
-        // Save the list to WordPress, then push it to the server.
-        function saveAll() {
-            setStatus('⏳ সেভ হচ্ছে...', true);
-            var form = new FormData();
-            form.append('action', 'mla_bots_save');
-            form.append('nonce', NONCE);
-            form.append('bots', JSON.stringify(bots));
-            return fetch(AJAX_URL, { method: 'POST', body: form, credentials: 'same-origin' })
-                .then(function (r) { return r.json(); }).then(function (d) {
-                    if (d && d.success) {
-                        bots = d.data.bots || [];
-                        renderList();
-                        return syncToServer();
+        // v8.2: verify against the server that the saved bot's commands
+        // really arrived — compare the actual arrays, not just the bot count.
+        // `entry` is the cleaned bot entry from the WordPress save response.
+        function verifySaved(entry) {
+            return fetch(RENDER_URL + '/api/bots')
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    var list = (d && d.ok && Array.isArray(d.bots)) ? d.bots : null;
+                    if (!list) return 'unknown';
+                    var found = null;
+                    list.forEach(function (b) {
+                        if (String(b.username || '').toLowerCase() === String(entry.username).toLowerCase()) found = b;
+                    });
+                    if (!found) return 'missing';
+                    var cc = JSON.stringify(normCustomCmds(found.custom_commands || []));
+                    var ec = JSON.stringify(normCustomCmds(entry.custom_commands || []));
+                    var bb = JSON.stringify(normBlocked(found.blocked_commands || []));
+                    var eb = JSON.stringify(normBlocked(entry.blocked_commands || []));
+                    return (cc === ec && bb === eb) ? 'ok' : 'mismatch';
+                })
+                .catch(function () { return 'unknown'; })
+                .then(function (state) {
+                    if (state === 'ok') {
+                        var nc = (entry.custom_commands || []).length;
+                        var nb = (entry.blocked_commands || []).length;
+                        setStatus('✅ সেভ হয়েছে — সার্ভারে যাচাই হয়েছে (কাস্টম ' + nc + 'টি, বন্ধ ' + nb + 'টি)।', true);
+                    } else if (state === 'mismatch' || state === 'missing') {
+                        setStatus('⚠️ ওয়ার্ডপ্রেসে সেভ হয়েছে কিন্তু সার্ভারে পাওয়া যায়নি — নিচের Sync বোতাম চাপুন।', false);
+                    } else {
+                        setStatus('⚠️ সেভ হয়েছে, কিন্তু সার্ভার যাচাই করা যায়নি — নিচের Sync বোতাম চাপুন।', false);
                     }
-                    setStatus('❌ সেভ হয়নি: ' + (d && d.data ? d.data : 'অজানা ত্রুটি'), false);
-                }).catch(function (e) {
-                    setStatus('❌ সেভ হয়নি: ' + e.message, false);
                 });
         }
+        // v8.2: CORE SAVE — post `list` to wp_options (with ONE automatic
+        // retry on a fresh nonce when the first attempt fails as a nonce/403
+        // error), then sync to Render and verify the commands really arrived.
+        // `bots` is NOT mutated until the WordPress save succeeds, so a
+        // failed save leaves the form values AND the edit state intact and a
+        // retry cannot create a duplicate. On success, `bots` becomes the
+        // server-cleaned list from WordPress, the list re-renders, and
+        // onSuccess() runs (the caller clears the form there).
+        // `verifyUsername` is the bot whose commands the verify step checks.
+        function saveBotList(list, verifyUsername, onSuccess) {
+            setSaveBusy(true);
+            setStatus('⏳ সেভ হচ্ছে...', true);
+            return doSave(0);
+            function doSave(attempt) {
+                var form = new FormData();
+                form.append('action', 'mla_bots_save');
+                form.append('nonce', NONCE);
+                form.append('bots', JSON.stringify(list));
+                return fetch(AJAX_URL, { method: 'POST', body: form, credentials: 'same-origin' })
+                    .then(function (r) {
+                        var status = r.status;
+                        return r.text().then(function (t) {
+                            var d = null;
+                            try { d = JSON.parse(t); } catch (e) { d = null; }
+                            return { status: status, data: d, raw: t };
+                        });
+                    })
+                    .then(function (res) {
+                        if (res.data && res.data.success) {
+                            bots = (res.data.data && res.data.data.bots) || [];
+                            renderList();
+                            if (onSuccess) onSuccess();
+                            // Sync, then verify the saved bot's commands
+                            // (the cleaned entry from the WordPress response).
+                            // The button stays busy until the whole flow
+                            // (sync + verify) finishes, so a second click
+                            // cannot start a duplicate save mid-flight.
+                            var saved = null;
+                            var wantU = String(verifyUsername || '').toLowerCase();
+                            bots.forEach(function (b) {
+                                if (String(b.username || '').toLowerCase() === wantU) saved = b;
+                            });
+                            if (!saved) saved = { username: verifyUsername || '', custom_commands: [], blocked_commands: [] };
+                            return syncToServer().then(function (ok) {
+                                if (!ok) {
+                                    setStatus('⚠️ ওয়ার্ডপ্রেসে সেভ হয়েছে কিন্তু সার্ভারে পাঠানো যায়নি — নিচের Sync বোতাম চাপুন।', false);
+                                    return;
+                                }
+                                // No bot to verify (e.g. a deletion — the bot
+                                // is supposed to be gone): plain success.
+                                if (!verifyUsername) {
+                                    setStatus('✅ সেভ হয়েছে — সার্ভারে ' + bots.length + 'টি বট চালু আছে।', true);
+                                    return;
+                                }
+                                return verifySaved(saved);
+                            }).then(function () { setSaveBusy(false); })
+                            .catch(function () { setSaveBusy(false); });
+                        }
+                        // Nonce/403 failure → retry ONCE with a fresh nonce.
+                        if (attempt === 0 && isNonceFailure(res)) {
+                            return refreshNonce().then(function (ok) {
+                                if (ok) return doSave(1);
+                                return saveFailed('❌ সেভ হয়নি: নিরাপত্তা কোড নবায়ন করা যায়নি। পেজটি রিফ্রেশ করে আবার চেষ্টা করুন।');
+                            });
+                        }
+                        return saveFailed('❌ সেভ হয়নি: ' + saveErrorText(res));
+                    })
+                    .catch(function (e) {
+                        // Network error → retry once with a fresh nonce too.
+                        if (attempt === 0) {
+                            return refreshNonce().then(function (ok) {
+                                if (ok) return doSave(1);
+                                return saveFailed('❌ সেভ হয়নি: নেটওয়ার্ক সমস্যা (' + e.message + ')।');
+                            });
+                        }
+                        return saveFailed('❌ সেভ হয়নি: নেটওয়ার্ক সমস্যা (' + e.message + ')।');
+                    });
+            }
+            function saveFailed(msg) {
+                setSaveBusy(false);
+                // KEEP all form values — do not clear the form. The user can
+                // just press Save again.
+                setStatus(msg + ' আপনার লেখা ঘরেই আছে — আবার "সংরক্ষণ করুন" চাপুন।', false);
+            }
+            function saveErrorText(res) {
+                if (res.data && !res.data.success && res.data.data) return String(res.data.data);
+                if (res.status) return 'সার্ভার ত্রুটি (' + res.status + ')';
+                return 'অজানা ত্রুটি';
+            }
+        }
+        // v8.2: build the list WITHOUT mutating `bots` first — only a
+        // successful save commits the removal, so a failed save cannot
+        // silently drop a bot from the page.
         function removeBot(i) {
             if (!confirm('"' + bots[i].username + '" বটটি মুছে ফেলবেন?')) return;
-            bots.splice(i, 1);
-            saveAll();
+            var toSend = bots.slice();
+            toSend.splice(i, 1);
+            saveBotList(toSend, null, function () {
+                if (editingIndex === i) cancelEdit();
+                else if (editingIndex > i) editingIndex--;
+            });
+        }
+        function clearBotForm() {
+            document.getElementById('mla-bot-username').value = '';
+            document.getElementById('mla-bot-name').value = '';
+            document.getElementById('mla-bot-desc').value = '';
+            document.getElementById('mla-bot-earn').value = '';
+            document.getElementById('mla-bot-custom').value = '';
+            document.getElementById('mla-bot-blocked').value = '';
+        }
+        // Fill the add form with a bot's data so the admin can edit it.
+        // v8.2: show an unmissable banner so it is obvious this is an EDIT.
+        function startEdit(i) {
+            var b = bots[i];
+            if (!b) return;
+            editingIndex = i;
+            document.getElementById('mla-bot-username').value = b.username;
+            document.getElementById('mla-bot-name').value = b.name || '';
+            document.getElementById('mla-bot-desc').value = b.description || '';
+            document.getElementById('mla-bot-earn').value = b.how_to_earn || '';
+            document.getElementById('mla-bot-custom').value = formatCustom(b.custom_commands);
+            document.getElementById('mla-bot-blocked').value = formatBlocked(b.blocked_commands);
+            addBtn.textContent = '💾 সংরক্ষণ করুন';
+            document.getElementById('mla-bot-cancel-edit').style.display = '';
+            editBannerEl.textContent = '✏️ @' + b.username + ' সম্পাদনা করছেন — বদলে "সংরক্ষণ করুন" চাপুন।';
+            editBannerEl.style.display = '';
+            setStatus('✏️ "' + b.username + '" সম্পাদনা করছেন — বদলে "সংরক্ষণ করুন" চাপুন।', true);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+        function cancelEdit() {
+            editingIndex = -1;
+            clearBotForm();
+            addBtn.textContent = '➕ বট যুক্ত করুন';
+            document.getElementById('mla-bot-cancel-edit').style.display = 'none';
+            editBannerEl.style.display = 'none';
+            setStatus('', true);
         }
         document.getElementById('mla-bot-add').addEventListener('click', function () {
             var u = document.getElementById('mla-bot-username').value.trim().replace(/^@/, '');
@@ -192,26 +692,191 @@ function mla_bots_admin_page() {
                 setStatus('❌ সঠিক Bot username দিন (যেমন @SomeBot)।', false);
                 return;
             }
-            if (bots.some(function (b) { return b.username.toLowerCase() === u.toLowerCase(); })) {
-                setStatus('❌ এই বটটি ইতিমধ্যে যুক্ত আছে।', false);
+            if (editingIndex < 0 && bots.some(function (b) { return b.username.toLowerCase() === u.toLowerCase(); })) {
+                setStatus('❌ এই বটটি ইতিমধ্যে যুক্ত আছে — বদলাতে নিচের তালিকায় তার পাশের ✏️ সম্পাদনা চাপুন।', false);
                 return;
             }
-            bots.push({
+            var entry = {
                 username: u,
                 name: document.getElementById('mla-bot-name').value.trim() || u,
                 description: document.getElementById('mla-bot-desc').value.trim(),
-                how_to_earn: document.getElementById('mla-bot-earn').value.trim()
+                how_to_earn: document.getElementById('mla-bot-earn').value.trim(),
+                custom_commands: parseCustom(document.getElementById('mla-bot-custom').value),
+                blocked_commands: parseBlocked(document.getElementById('mla-bot-blocked').value)
+            };
+            // v8.2: build the list to send WITHOUT mutating `bots` and
+            // WITHOUT clearing the form yet. Only a successful save clears
+            // the form / exits edit mode — a failed save keeps every value
+            // so the user can just press Save again.
+            var toSend = bots.slice();
+            var wasEditing = editingIndex >= 0;
+            if (wasEditing) toSend[editingIndex] = entry;
+            else toSend.push(entry);
+            saveBotList(toSend, u, function () {
+                if (wasEditing) cancelEdit();
+                else clearBotForm();
             });
-            document.getElementById('mla-bot-username').value = '';
-            document.getElementById('mla-bot-name').value = '';
-            document.getElementById('mla-bot-desc').value = '';
-            document.getElementById('mla-bot-earn').value = '';
-            saveAll();
         });
+        document.getElementById('mla-bot-cancel-edit').addEventListener('click', cancelEdit);
         document.getElementById('mla-bot-sync').addEventListener('click', function () { syncToServer(); });
         renderList();
         // Auto-sync on page open (self-heals after a server redeploy/restart).
         if (bots.length) syncToServer();
+
+        // ---------- Telegram Accounts (v8) ----------
+        var accStatusEl = document.getElementById('mla-acc-status');
+        var accListEl = document.getElementById('mla-acc-list');
+        var accCountEl = document.getElementById('mla-acc-count');
+        var accPhoneEl = document.getElementById('mla-acc-phone');
+        var accOtpRow = document.getElementById('mla-acc-otp-row');
+        var accOtpEl = document.getElementById('mla-acc-otp');
+        var pendingPhone = '';
+        function setAccStatus(msg, ok) {
+            accStatusEl.textContent = msg;
+            accStatusEl.style.color = ok ? 'green' : 'red';
+        }
+        // Fetch the pool accounts from the server (masked phones only — no
+        // session strings ever come to the browser).
+        function fetchAccounts() {
+            return fetch(RENDER_URL + '/api/admin/accounts?secret=' + encodeURIComponent(SECRET))
+                .then(function (r) { return r.json(); }).then(function (d) {
+                    var list = (d && d.ok && Array.isArray(d.accounts)) ? d.accounts : [];
+                    accCountEl.textContent = list.length;
+                    accListEl.innerHTML = '';
+                    if (!list.length) {
+                        accListEl.innerHTML = '<tr><td colspan="5">এখনো কোনো অ্যাকাউন্ট যুক্ত হয়নি। উপরের ফর্ম থেকে ফোন নম্বর দিয়ে যুক্ত করুন।</td></tr>';
+                        return;
+                    }
+                    list.forEach(function (a) {
+                        var tr = document.createElement('tr');
+                        var st = a.status === 'connected' ? '🟢 চালু' : (a.status === 'cooling' ? '🟡 ঠান্ডা হচ্ছে' : '🔴 বন্ধ');
+                        tr.innerHTML = '<td><b>' + esc(a.id) + '</b></td><td>' + esc(a.phone || '—') + '</td><td>' + st + '</td><td>' + (a.activeSends || 0) + '</td>';
+                        var td = document.createElement('td');
+                        var del = document.createElement('button');
+                        del.className = 'button';
+                        del.textContent = '✕ মুছুন';
+                        del.onclick = function () { removeAccount(a.id, a.fingerprint); };
+                        td.appendChild(del);
+                        tr.appendChild(td);
+                        accListEl.appendChild(tr);
+                    });
+                }).catch(function (e) {
+                    accListEl.innerHTML = '<tr><td colspan="5">অ্যাকাউন্ট লিস্ট আনা যায়নি: ' + esc(e.message) + '</td></tr>';
+                });
+        }
+        // Server-side accounts sync (PHP reads the sessions from wp_options
+        // and pushes them to Render — the browser never sees them).
+        function syncAccounts(showOk) {
+            setAccStatus('⏳ অ্যাকাউন্ট Sync হচ্ছে...', true);
+            var form = new FormData();
+            form.append('action', 'mla_accounts_sync');
+            form.append('nonce', NONCE);
+            return fetch(AJAX_URL, { method: 'POST', body: form, credentials: 'same-origin' })
+                .then(function (r) { return r.json(); }).then(function (d) {
+                    if (d && d.success) {
+                        if (showOk) setAccStatus('✅ অ্যাকাউন্ট Sync হয়েছে — সার্ভারে ' + (d.data.count || 0) + 'টি অ্যাকাউন্ট চালু আছে।', true);
+                        return fetchAccounts();
+                    }
+                    setAccStatus('❌ অ্যাকাউন্ট Sync হয়নি: ' + (d && d.data ? d.data : 'অজানা ত্রুটি'), false);
+                }).catch(function (e) {
+                    setAccStatus('❌ অ্যাকাউন্ট Sync হয়নি: ' + e.message, false);
+                });
+        }
+        // Step 1: send the OTP to the phone.
+        document.getElementById('mla-acc-send-otp').addEventListener('click', function () {
+            var phone = accPhoneEl.value.trim();
+            if (!/^\+?[0-9]{7,15}$/.test(phone)) {
+                setAccStatus('❌ সঠিক ফোন নম্বর দিন (যেমন +8801XXXXXXXXX)।', false);
+                return;
+            }
+            setAccStatus('⏳ OTP পাঠানো হচ্ছে...', true);
+            fetch(RENDER_URL + '/api/admin/tg-login-start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ phone: phone, secret: SECRET })
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                if (d && d.ok) {
+                    pendingPhone = phone;
+                    accOtpRow.style.display = '';
+                    accOtpEl.value = '';
+                    accOtpEl.focus();
+                    setAccStatus('✅ OTP পাঠানো হয়েছে — Telegram-এ আসা কোডটি দিন।', true);
+                } else {
+                    setAccStatus('❌ OTP পাঠানো যায়নি: ' + (d && d.error ? d.error : 'অজানা ত্রুটি'), false);
+                }
+            }).catch(function (e) {
+                setAccStatus('❌ সার্ভারে পৌঁছানো যায়নি: ' + e.message, false);
+            });
+        });
+        // Step 2: verify the OTP. The session string comes back here — it is
+        // saved straight into wp_options and NEVER shown or logged.
+        document.getElementById('mla-acc-verify').addEventListener('click', function () {
+            var code = accOtpEl.value.trim();
+            if (!pendingPhone || !code) {
+                setAccStatus('❌ প্রথমে OTP পাঠান, তারপর কোডটি দিন।', false);
+                return;
+            }
+            setAccStatus('⏳ যাচাই করা হচ্ছে...', true);
+            fetch(RENDER_URL + '/api/admin/tg-login-verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ phone: pendingPhone, code: code, secret: SECRET })
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                if (d && d.ok && d.session) {
+                    // Save the session into wp_options (never display it).
+                    var form = new FormData();
+                    form.append('action', 'mla_bots_save_session');
+                    form.append('nonce', NONCE);
+                    form.append('session', d.session);
+                    return fetch(AJAX_URL, { method: 'POST', body: form, credentials: 'same-origin' })
+                        .then(function (r2) { return r2.json(); }).then(function (d2) {
+                            if (d2 && d2.success) {
+                                accOtpRow.style.display = 'none';
+                                accOtpEl.value = '';
+                                pendingPhone = '';
+                                setAccStatus('✅ অ্যাকাউন্ট যুক্ত হয়েছে — সার্ভারে চালু আছে।', true);
+                                return syncAccounts(false).then(fetchAccounts);
+                            }
+                            setAccStatus('❌ সেভ হয়নি: ' + (d2 && d2.data ? d2.data : 'অজানা ত্রুটি'), false);
+                        });
+                }
+                var err = (d && d.error) ? d.error : 'অজানা ত্রুটি';
+                setAccStatus('❌ যাচাই হয়নি: ' + err + ' — নতুন OTP নিন।', false);
+                pendingPhone = '';
+                accOtpRow.style.display = 'none';
+            }).catch(function (e) {
+                setAccStatus('❌ সার্ভারে পৌঁছানো যায়নি: ' + e.message, false);
+            });
+        });
+        function removeAccount(id, fingerprint) {
+            if (!confirm('"' + id + '" অ্যাকাউন্টটি মুছে ফেলবেন? সাইট থেকে ওই অ্যাকাউন্ট আর বট চালাতে পারবে না।')) return;
+            setAccStatus('⏳ মুছে ফেলা হচ্ছে...', true);
+            fetch(RENDER_URL + '/api/admin/accounts/remove', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: id, secret: SECRET })
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                if (d && d.ok) {
+                    // Also drop the matching session from wp_options (by
+                    // fingerprint — the session string itself never leaves
+                    // the server).
+                    var form = new FormData();
+                    form.append('action', 'mla_accounts_remove');
+                    form.append('nonce', NONCE);
+                    form.append('fingerprint', fingerprint || '');
+                    return fetch(AJAX_URL, { method: 'POST', body: form, credentials: 'same-origin' })
+                        .then(function () { setAccStatus('✅ অ্যাকাউন্ট মুছে ফেলা হয়েছে।', true); return fetchAccounts(); });
+                }
+                setAccStatus('❌ মুছে ফেলা যায়নি: ' + (d && d.error ? d.error : 'অজানা ত্রুটি'), false);
+            }).catch(function (e) {
+                setAccStatus('❌ সার্ভারে পৌঁছানো যায়নি: ' + e.message, false);
+            });
+        }
+        document.getElementById('mla-acc-sync').addEventListener('click', function () { syncAccounts(true); });
+        // On page open: restore the pool from wp_options (server-side), then
+        // show the live account list.
+        fetchAccounts();
+        if (HAS_SESSIONS) syncAccounts(false);
     })();
     </script>
     <?php
