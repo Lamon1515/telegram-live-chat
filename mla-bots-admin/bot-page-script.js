@@ -131,6 +131,44 @@
       }
     } catch (e) {}
   }
+  // v9.6 (dark theme, JS-direct): set the critical surfaces' colours
+  // INLINE, so they follow the theme even when the CSS-variable pipeline
+  // fails (cached old HTML, variables not resolving on static elements, or
+  // the plugin <style> not reaching them — the exact cause stayed unproven
+  // after three versions). Theme test matches the site exactly: light is
+  // data-theme="light" on <html>; dark is the attribute REMOVED (there is
+  // no dark value at all). Bubbles/chips/buttons/picker rows already
+  // follow the theme via CSS variables and work — they are left alone.
+  // Runs at init, on load, and at 500ms/1500ms (same as the other init
+  // helpers), and on every live theme toggle via the MutationObserver
+  // below. Inline styles override everything, including cached old HTML.
+  function applyTheme() {
+    var light = false;
+    try { light = document.documentElement.getAttribute('data-theme') === 'light'; } catch (e) { light = false; }
+    var listBg = light ? '#e9edf1' : '#0e1621';
+    var surface = light ? '#fff' : '#17212b';
+    var inputText = light ? '#111827' : '#e8eef4';
+    try {
+      var pageEl = document.getElementById('mla-bot-page');
+      if (pageEl) pageEl.style.background = surface;
+      var hdrEl = pageEl ? pageEl.querySelector('.mla-hdr') : document.querySelector('#mla-bot-page .mla-hdr');
+      if (hdrEl) hdrEl.style.background = surface;
+      if (list) { list.style.background = listBg; list.style.backgroundImage = 'none'; }
+      if (picker) picker.style.background = surface;
+      if (cmdsEl) cmdsEl.style.background = surface;
+      if (form) form.style.background = surface;
+      if (input) { input.style.background = surface; input.style.color = inputText; }
+    } catch (e) {}
+  }
+  // v9.6: watch for live theme toggles (sun/moon) — the site flips
+  // data-theme on <html> with no reload, so re-apply the colours the
+  // moment it changes. No reload needed.
+  try {
+    if (window.MutationObserver) {
+      var themeObs = new MutationObserver(function () { applyTheme(); });
+      themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    }
+  } catch (e) {}
   // v9.0 (Telegram): chat-list avatar colours, cycled per bot (Telegram
   // gives each chat its own avatar colour). v9.4: richer gradients
   // (Telegram-blue family) + a soft ring/shadow on the avatar itself.
@@ -389,7 +427,7 @@
     if (b) {
       titleEl.textContent = b.name || b.username;
       avatarEl.textContent = avatarInitial(b);
-      subEl.textContent = '@' + b.username + ' • online • v9.5';
+      subEl.textContent = '@' + b.username + ' • online • v9.6';
       subEl.style.color = '#0088cc';
       addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
     }
@@ -462,7 +500,7 @@
             if (b) {
               titleEl.textContent = b.name || b.username;
               avatarEl.textContent = avatarInitial(b);
-              subEl.textContent = '@' + b.username + ' • online • v9.5';
+              subEl.textContent = '@' + b.username + ' • online • v9.6';
               subEl.style.color = '#0088cc';
             }
             fetchCommands(selectedBot);
@@ -524,17 +562,19 @@
     send(text);
   });
   // v9.5: fit the chat between the fixed header + bottom menu, hide the
-  // floating Spin Now button, and hide the redundant page title. Re-fit
+  // floating Spin Now button, and hide the redundant page title. v9.6:
+  // also apply the theme colours directly (applyTheme). Re-fit
   // on resize/orientationchange and again shortly after load (the bottom
   // menu and the title can render late, after this script).
   fitChat();
   hideSpinButton();
   hidePageTitle();
+  applyTheme();
   window.addEventListener('resize', fitChat);
   window.addEventListener('orientationchange', fitChat);
-  window.addEventListener('load', function () { fitChat(); hideSpinButton(); hidePageTitle(); });
-  setTimeout(function () { fitChat(); hideSpinButton(); hidePageTitle(); }, 500);
-  setTimeout(function () { fitChat(); hideSpinButton(); hidePageTitle(); }, 1500);
+  window.addEventListener('load', function () { fitChat(); hideSpinButton(); hidePageTitle(); applyTheme(); });
+  setTimeout(function () { fitChat(); hideSpinButton(); hidePageTitle(); applyTheme(); }, 500);
+  setTimeout(function () { fitChat(); hideSpinButton(); hidePageTitle(); applyTheme(); }, 1500);
   if (sessionId) loadHistory();
   fetchBots();
   connect();
