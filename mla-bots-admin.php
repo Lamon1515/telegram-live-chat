@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MLA Bots — Admin Panel
  * Description: WordPress admin panel (wp-admin only) to manage the connected Telegram income bots and the Telegram user accounts that power the userbot bridge. Saves to wp_options and syncs to the Render live-chat server. Never a user page.
- * Version: 1.1.9
+ * Version: 1.1.10
  * Author: MLA
  *
  * MLA Bots — Admin Panel (wp-admin only, NEVER a user page)
@@ -25,7 +25,7 @@
  * OTP (the OTP goes to that phone); the returned session string is saved
  * into wp_options straight away.
  *
- * FRONT-END (v9.6): this plugin also enqueues the MLA Bot page's chat
+ * FRONT-END (v9.7): this plugin also enqueues the MLA Bot page's chat
  * JavaScript (bot-page-script.js) in the footer, only on page 1777. The
  * page block holds HTML + CSS only — an inline <script> there never runs
  * because the theme loads page content client-side. See the
@@ -187,7 +187,7 @@ add_action('mla_bots_hourly_sync', function () {
 // always executes. is_page(1777) covers the page whether it is reached by
 // permalink or by ?page_id=1777 (and even if it were the front page). No
 // dependencies — the script is self-contained (it must NOT depend on
-// jQuery). Version '9.6' cache-busts after updates. If the JS file is
+// jQuery). Version '9.7' cache-busts after updates. If the JS file is
 // missing, nothing is enqueued (no fatal).
 // --- v9.5: MLA Bot page CSS via wp_head (page 1777 only) ---
 // The previous build put ALL of this CSS in a <style> block inside the Custom HTML block
@@ -293,7 +293,7 @@ add_action('wp_enqueue_scripts', function () {
         'mla-bot-page-script',
         plugin_dir_url(__FILE__) . 'bot-page-script.js',
         array(),
-        '9.6',
+        '9.7',
         true
     );
 });
