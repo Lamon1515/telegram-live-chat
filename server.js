@@ -338,18 +338,28 @@ const userbotPool = []; // pool accounts, in the order their sessions were added
 let nextAccountNum = 1;
 
 // Lazy-load the GramJS (`telegram`) package once. Returns
-// { TelegramClient, StringSession, NewMessage, MessageEdited, Api } or
+// { TelegramClient, StringSession, NewMessage, EditedMessage, Api } or
 // null when the package is missing (bridge stays disabled, live chat
 // keeps working).
+// v8.7 ROOT CAUSE: `telegram/events` does NOT export MessageEdited — its
+// index only exports Raw, NewMessage, NewMessageEvent. The EditedMessage
+// class EXISTS in `telegram/events/EditedMessage` but must be required
+// directly. v8.5's `require('telegram/events').MessageEdited` was
+// `undefined`, so the `if (lib.MessageEdited)` guard silently skipped
+// registering the edit handler and NO bot edit ever reached a visitor.
+// That is why the Gmail Registration button (which edits the message
+// in place) showed nothing.
 let _tgLib = null;
 function telegramLib() {
   if (_tgLib) return _tgLib;
   try {
     const { TelegramClient } = require('telegram');
     const { StringSession } = require('telegram/sessions');
-    const { NewMessage, MessageEdited } = require('telegram/events');
+    const { NewMessage } = require('telegram/events');
+    const { EditedMessage } = require('telegram/events/EditedMessage');
     const { Api } = require('telegram');
-    _tgLib = { TelegramClient, StringSession, NewMessage, MessageEdited, Api };
+    _tgLib = { TelegramClient, StringSession, NewMessage, EditedMessage, Api };
+    if (!EditedMessage) console.error('[userbot] WARNING: EditedMessage event not available — bot message edits will NOT be routed!');
     return _tgLib;
   } catch (e) { return null; }
 }
@@ -565,9 +575,11 @@ async function connectAccount(acc) {
     if (!acc.client) {
       acc.client = new lib.TelegramClient(new lib.StringSession(acc.sessionStr), TG_API_ID, TG_API_HASH, { connectionRetries: 5 });
       acc.client.addEventHandler(onUserbotMessage, new lib.NewMessage({}));
-      // v8.5: most bots EDIT their message when a button is tapped — listen
-      // for edits too, or the visitor sees nothing.
-      if (lib.MessageEdited) acc.client.addEventHandler(onUserbotMessageEdited, new lib.MessageEdited({}));
+      // v8.5/v8.7: most bots EDIT their message when a button is tapped —
+      // listen for edits too, or the visitor sees nothing. (v8.7: the class
+      // is EditedMessage, required directly — see telegramLib().)
+      if (lib.EditedMessage) acc.client.addEventHandler(onUserbotMessageEdited, new lib.EditedMessage({}));
+      else console.error('[userbot] WARNING: EditedMessage not available — bot edits will NOT be routed!');
     }
     await acc.client.connect();
     // Verify the session really logged in as a user (and log who it is,
@@ -1465,7 +1477,7 @@ app.post('/api/admin/tg-login-start', async (req, res) => {
     // Register the message handler now so the account is ready the moment
     // it joins the pool (after verify).
     client.addEventHandler(onUserbotMessage, new lib.NewMessage({}));
-    if (lib.MessageEdited) client.addEventHandler(onUserbotMessageEdited, new lib.MessageEdited({})); // v8.5: edits too
+    if (lib.EditedMessage) client.addEventHandler(onUserbotMessageEdited, new lib.EditedMessage({})); // v8.5/v8.7: edits too
     await client.connect();
     const sent = await client.sendCode({ apiId: TG_API_ID, apiHash: TG_API_HASH }, phone);
     pendingLogins.set(phone, { client, phoneCodeHash: sent && sent.phoneCodeHash ? sent.phoneCodeHash : '', createdAt: Date.now() });
