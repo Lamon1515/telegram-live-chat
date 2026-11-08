@@ -1,19 +1,64 @@
-<!-- MLA Bot page snippet — full-page chat with a BOT SELECTOR. (v9.2: full-screen mobile, rock-stable, premium Telegram look — script enqueued from the MLA Bots plugin)
+<!-- MLA Bot page snippet — full-page chat with a BOT SELECTOR. (v9.3: stable between the fixed site header + bottom menu, dark/light theme support — script enqueued from the MLA Bots plugin)
      Paste into a WordPress Custom HTML block / Elementor HTML widget.
      Uses the same session + localStorage as the floating widget, so the chat
      is shared between this page and the widget.
      The visitor picks a bot from the list (fetched from GET /api/bots);
      messages go to the SELECTED bot via the GramJS userbot bridge, and that
      bot's REAL reply comes back (marked from:'bot').
-     v9.2 notes: on mobile (≤640px) this chat fills the whole screen
-     (100dvh, 100vh fallback) as one flex column — header top, chat list
-     flex:1 scrolling internally, composer pinned at the bottom in normal
-     flow (no fixed positioning, so the keyboard cannot shove it around).
-     Input is 16px so iOS never auto-zooms on focus (the "shaking" fix).
-     All selectors below are scoped to #mla-bot-page — nothing leaks out. -->
+     v9.3 notes: the site header (#mla-topbar) and bottom menu (#bottomNav)
+     stay VISIBLE — they are pinned stable, never hidden. The chat fits
+     exactly between them (the enqueued JS measures their real heights and
+     sets the chat height to calc(100dvh - headerH - bottomNavH); the page
+     itself never scrolls, so nothing shakes or moves on mobile.
+     All colours are CSS variables: light under html[data-theme="light"],
+     dark under html:not([data-theme="light"]) — the site REMOVES data-theme
+     for dark, there is NO dark value anywhere.
+     All selectors below are scoped to #mla-bot-page or body.page-id-1777 —
+     nothing leaks to other pages. -->
 <style>
-/* Header: frosted translucent (solid white fallback) + soft shadow. */
-#mla-bot-page .mla-hdr{background:#fff;background:rgba(255,255,255,.88);-webkit-backdrop-filter:blur(14px) saturate(1.4);backdrop-filter:blur(14px) saturate(1.4);box-shadow:0 1px 12px rgba(16,24,40,.08);position:relative;z-index:5;}
+/* ---- v9.3 theme variables ---- */
+/* Light (Telegram light palette). :root carries the light values so the
+   chat is never unstyled; html[data-theme="light"] states it explicitly. */
+:root, html[data-theme="light"]{
+  --mla-bg:#fff; --mla-list-bg:#e9edf1;
+  --mla-bubble-in:#fff; --mla-bubble-out:#cde9f8;
+  --mla-text:#111827; --mla-text2:#6b7280; --mla-meta:#9aa8b5;
+  --mla-border:#e5e7eb; --mla-border-soft:#f0f2f5;
+  --mla-chip-bg:#f0f2f5; --mla-chip-text:#111827; --mla-chip-active:#e3ebf1;
+  --mla-ibtn-bg:#e8f1f8; --mla-ibtn-text:#0088cc; --mla-ibtn-active:#d9e9f6;
+  --mla-sys-bg:#eef2f5; --mla-sys-text:#5b6b7a;
+  --mla-input-bg:#fff; --mla-input-text:#111827;
+  --mla-picker-active:#e8f1f8;
+  --mla-hdr-bg:rgba(255,255,255,.88); --mla-hdr-fallback:#fff;
+  --mla-sh-a:rgba(16,24,40,.10); --mla-sh-b:rgba(16,24,40,.06);
+  --mla-dot:rgba(0,0,0,0.05);
+}
+/* Dark (Telegram dark palette). The site REMOVES data-theme for dark —
+   there is no dark value, so dark is html:not([data-theme="light"]). */
+html:not([data-theme="light"]){
+  --mla-bg:#17212b; --mla-list-bg:#0e1621;
+  --mla-bubble-in:#182533; --mla-bubble-out:#2b5278;
+  --mla-text:#e8eef4; --mla-text2:#7f91a4; --mla-meta:#7f91a4;
+  --mla-border:#1c2733; --mla-border-soft:#1c2733;
+  --mla-chip-bg:#17212b; --mla-chip-text:#e8eef4; --mla-chip-active:#1f2c3a;
+  --mla-ibtn-bg:#2b5278; --mla-ibtn-text:#64b5ef; --mla-ibtn-active:#35608f;
+  --mla-sys-bg:#17212b; --mla-sys-text:#7f91a4;
+  --mla-input-bg:#17212b; --mla-input-text:#e8eef4;
+  --mla-picker-active:#1f2c3a;
+  --mla-hdr-bg:rgba(23,33,43,.88); --mla-hdr-fallback:#17212b;
+  --mla-sh-a:rgba(0,0,0,.35); --mla-sh-b:rgba(0,0,0,.25);
+  --mla-dot:rgba(255,255,255,0.04);
+}
+/* ---- v9.3: this page never scrolls — the chat list scrolls internally.
+   Scoped to this page only, so the fixed header + bottom menu never move. */
+body.page-id-1777{overflow:hidden;}
+/* ---- v9.3: keep the site chrome VISIBLE but pinned stable on this page.
+   The bottom menu has a `bottom` transition that slides it (the shake);
+   pin it at bottom:0 and kill the transition. Same for the top header. */
+body.page-id-1777 #bottomNav{bottom:0!important;transition:none!important;}
+body.page-id-1777 #mla-topbar{transition:none!important;}
+/* Header: frosted translucent (solid fallback) + soft shadow. */
+#mla-bot-page .mla-hdr{background:var(--mla-hdr-fallback);background:var(--mla-hdr-bg);-webkit-backdrop-filter:blur(14px) saturate(1.4);backdrop-filter:blur(14px) saturate(1.4);box-shadow:0 1px 12px var(--mla-sh-a);position:relative;z-index:5;}
 /* Header avatar: richer Telegram-blue gradient + soft ring. */
 #mla-bot-page .mla-hdr-av{background-color:#1e96c8;background:linear-gradient(135deg,#4db2e8,#1a8fc4 55%,#0f7fb8);box-shadow:0 0 0 2px rgba(255,255,255,.9),0 2px 8px rgba(0,136,204,.35);}
 /* Picker / commands: never squeeze the chat list; picker scrolls internally. */
@@ -27,36 +72,42 @@
 #mla-bot-page .mla-send:active{transform:scale(.92);box-shadow:0 1px 4px rgba(0,136,204,.3);}
 /* Command chips (JS-created): gentle press. */
 #mla-bot-page .mla-chip{transition:transform .12s ease,background .12s ease;}
-#mla-bot-page .mla-chip:active{transform:scale(.96);background:#e3ebf1;}
+#mla-bot-page .mla-chip:active{transform:scale(.96);background:var(--mla-chip-active);}
 /* Inline-keyboard buttons (JS-created): press feedback. */
 #mla-bot-page .mla-ibtn{transition:transform .12s ease,background .12s ease;}
-#mla-bot-page .mla-ibtn:active{transform:scale(.98);background:#d9e9f6;}
+#mla-bot-page .mla-ibtn:active{transform:scale(.98);background:var(--mla-ibtn-active);}
+/* Input placeholder follows the theme. */
+#mla-bot-page #mla-bot-input::placeholder{color:var(--mla-text2);}
 /* New-message entrance: fade + tiny rise, ~150ms, only for live arrivals
    (JS adds .mla-msg-in to new rows; history re-renders do not get it). */
 @keyframes mlaMsgIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
 #mla-bot-page .mla-msg-in{animation:mlaMsgIn .16s ease-out;}
 @media (prefers-reduced-motion:reduce){#mla-bot-page .mla-msg-in{animation:none;}}
-/* ---- Mobile (≤640px): the chat fills the whole screen. ---- */
+/* ---- Mobile (≤640px): the chat fills the space between the fixed site
+   header and the fixed bottom menu. Height is set exactly by JS
+   (calc(100dvh - headerH - bottomNavH)); the CSS 100dvh here is only the
+   fallback before JS runs. NOTE: no !important on height — the JS inline
+   height must win over this rule. ---- */
 @media (max-width:640px){
-  #mla-bot-page{max-width:100%!important;margin:0!important;height:100vh!important;height:100dvh!important;}
+  #mla-bot-page{max-width:100%!important;margin:0!important;height:100vh;height:100dvh;}
   #mla-bot-list{height:auto!important;flex:1 1 auto!important;min-height:0!important;}
 }
 </style>
-<div id="mla-bot-page" style="max-width:560px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,system-ui,sans-serif;background:#fff;display:flex;flex-direction:column;overflow:hidden;overscroll-behavior:contain;-webkit-tap-highlight-color:transparent;">
-  <div class="mla-hdr" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #e5e7eb;">
+<div id="mla-bot-page" style="max-width:560px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,system-ui,sans-serif;background:var(--mla-bg);display:flex;flex-direction:column;overflow:hidden;overscroll-behavior:contain;-webkit-tap-highlight-color:transparent;">
+  <div class="mla-hdr" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--mla-border);">
     <button id="mla-bot-back" type="button" aria-label="বট তালিকা" style="border:none;background:none;color:#0088cc;font-size:28px;line-height:1;padding:0 4px;cursor:pointer;touch-action:manipulation;">‹</button>
     <div id="mla-bot-avatar" class="mla-hdr-av" style="width:42px;height:42px;flex:0 0 42px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;">🤖</div>
     <div style="flex:1;min-width:0;">
-      <div id="mla-bot-title" style="font-weight:700;font-size:16px;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">MLA Bot</div>
-      <div id="mla-bot-sub" style="font-size:13px;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">বট বেছে নিন • v9.2</div>
+      <div id="mla-bot-title" style="font-weight:700;font-size:16px;color:var(--mla-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">MLA Bot</div>
+      <div id="mla-bot-sub" style="font-size:13px;color:var(--mla-text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">বট বেছে নিন • v9.3</div>
     </div>
   </div>
-  <div id="mla-bot-picker" style="background:#fff;border-bottom:1px solid #e5e7eb;"></div>
-  <div id="mla-bot-commands" style="display:flex;gap:8px;padding:8px 12px;background:#fff;border-bottom:1px solid #e5e7eb;overflow-x:auto;"></div>
-  <div id="mla-bot-list" style="height:55vh;min-height:320px;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:12px 10px;display:flex;flex-direction:column;gap:6px;background-color:#e9edf1;background-image:radial-gradient(rgba(0,0,0,0.05) 1px,transparent 1.2px);background-size:16px 16px;"></div>
-  <form id="mla-bot-form" style="display:flex;gap:8px;align-items:center;padding:8px 10px;background:#fff;border-top:1px solid #e5e7eb;">
+  <div id="mla-bot-picker" style="background:var(--mla-bg);border-bottom:1px solid var(--mla-border);"></div>
+  <div id="mla-bot-commands" style="display:flex;gap:8px;padding:8px 12px;background:var(--mla-bg);border-bottom:1px solid var(--mla-border);overflow-x:auto;"></div>
+  <div id="mla-bot-list" style="height:55vh;min-height:320px;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:12px 10px;display:flex;flex-direction:column;gap:6px;background-color:var(--mla-list-bg);background-image:radial-gradient(var(--mla-dot) 1px,transparent 1.2px);background-size:16px 16px;"></div>
+  <form id="mla-bot-form" style="display:flex;gap:8px;align-items:center;padding:8px 10px;background:var(--mla-bg);border-top:1px solid var(--mla-border);">
     <input id="mla-bot-input" type="text" placeholder="মেসেজ লিখুন…" maxlength="1000" autocomplete="off" enterkeyhint="send"
-      style="flex:1;min-width:0;padding:11px 16px;border:1px solid #e5e7eb;border-radius:999px;font-size:16px;outline:none;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+      style="flex:1;min-width:0;padding:11px 16px;border:1px solid var(--mla-border);border-radius:999px;font-size:16px;outline:none;background:var(--mla-input-bg);color:var(--mla-input-text);box-shadow:0 1px 3px var(--mla-sh-a);">
     <button type="submit" aria-label="Send" class="mla-send"
       style="width:46px;height:46px;flex:0 0 46px;border:none;border-radius:50%;background:linear-gradient(135deg,#2ea6e0,#0088cc);color:#fff;font-size:18px;cursor:pointer;box-shadow:0 2px 10px rgba(0,136,204,.4);touch-action:manipulation;">➤</button>
   </form>
