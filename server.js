@@ -432,6 +432,23 @@ function saveRuntimeSessions() {
 const botUserIds = new Map();
 // numeric Telegram user id (as string) -> bot username (lowercase, no @)
 const botIdToUsername = new Map();
+// v8.6: warm the bot-id maps at (re)connect time. The maps are in-memory,
+// so after a restart/deploy they are EMPTY until the first SEND to each bot
+// resolves its id — a CLICK does not warm them, so a bot reply arriving
+// before any send is dropped as bot=(unknown). Resolving every connected
+// bot up front fixes that.
+async function warmBotIdMap(client) {
+  if (!client || !Array.isArray(connectedBots) || !connectedBots.length) return;
+  for (const b of connectedBots) {
+    const key = String((b && b.username) || '').toLowerCase().replace(/^@/, '');
+    if (!key || botUserIds.has(key)) continue;
+    try {
+      const entity = await client.getEntity(key);
+      const id = entity && entity.id !== undefined ? String(entity.id) : '';
+      if (id) { botUserIds.set(key, id); botIdToUsername.set(id, key); }
+    } catch (e) { /* leave it — the first send will resolve it */ }
+  }
+}
 // bot username (lowercase, no @) -> { queue: [], busy: false, pending: null }
 // pending: { sessionId, text, sentMsgId, timer, resolve }
 const botQueues = new Map();
@@ -562,6 +579,9 @@ async function connectAccount(acc) {
     acc.reconnectTries = 0;
     if (me && me.phone) acc.phoneMasked = maskPhone(String(me.phone));
     console.log(`[userbot] ${acc.id} connected as a user account (${acc.phoneMasked || 'phone hidden'}, id=${me && me.id ? me.id : '?'}) — income-bot bridge is ON.`);
+    // v8.6: warm the bot-id maps now so bot replies are recognised even
+    // before the first send to each bot.
+    warmBotIdMap(acc.client).catch(() => { /* ignore — sends resolve it */ });
   } catch (e) {
     acc.client = null; // drop the broken client; a fresh one is built next try
     acc.status = 'disconnected';
@@ -734,7 +754,13 @@ function routeBotOutput(msg, isEdit) {
     if (!q || !q.pending) { console.log(`[userbot] no visitor waiting on @${botKey} (ignored)`); return; }
     if (!isEdit) {
       const replyToId = msg.replyTo ? msg.replyTo.replyToMsgId : undefined;
-      if (replyToId !== undefined && replyToId !== null && Number(replyToId) !== Number(q.pending.sentMsgId)) {
+      // v8.6: only apply the replyTo check when the pending came from a SEND
+      // (sentMsgId set). A click-pending has sentMsgId null — the bot's reply
+      // to a tap is never a reply to a message we sent, so any replyTo would
+      // falsely mismatch and drop a real reply.
+      if (q.pending.sentMsgId !== null && q.pending.sentMsgId !== undefined
+          && replyToId !== undefined && replyToId !== null
+          && Number(replyToId) !== Number(q.pending.sentMsgId)) {
         console.log(`[userbot] replyTo ${replyToId} != sent ${q.pending.sentMsgId} (ignored)`);
         return;
       }
@@ -1307,6 +1333,12 @@ app.post('/api/click', async (req, res) => {
   if (label && clickBot && isCommandBlocked(clickBot, label)) {
     return res.json({ ok: false, error: 'blocked' });
   }
+  // v8.6: create the reply-wait FIRST, before the click — a bot can edit
+  // its message the instant the callback lands, and if the pending does
+  // not exist yet that edit is dropped as "no visitor waiting". (This was
+  // the Gmail Registration miss: the bot edited the message during the
+  // click, before waitForBotReply ran.)
+  const replyPromise = waitForBotReply(sid, botKey);
   // v8.5: capture the bot's popup answer to this tap (answerCallbackQuery).
   // Some bots answer a tap with ONLY a popup and no message — without this
   // the visitor sees nothing. The popup text is pushed right away; if the
@@ -1321,6 +1353,15 @@ app.post('/api/click', async (req, res) => {
     console.log(`[userbot] clicked @${botKey} button [${row},${col}] ${msgPreview(label)} (session ${sid}) — waiting for the bot's reply.${popupText ? ' (popup: ' + msgPreview(popupText) + ')' : ''}`);
   } catch (e) {
     console.error('[userbot] click failed:', e && e.message ? e.message : e);
+    // The click failed — cancel the pending we just created so the queue
+    // frees up at once instead of sitting busy until its 30s timeout.
+    const q = botQueueFor(botKey);
+    if (q.pending && q.pending.sessionId === sid) {
+      const p = q.pending;
+      clearPending(q, p);
+      p.resolve(null);
+      processBotQueue(botKey);
+    }
     return res.json({ ok: false, error: 'click failed' });
   }
   // Wait for the bot's response and route it back to this visitor.
@@ -1329,7 +1370,7 @@ app.post('/api/click', async (req, res) => {
   const botEntry = findBotByUsername(botKey);
   const botTag = botEntry ? botEntry.username : botKey;
   if (popupText) pushToVisitor(sid, newMsg(getSession(sid), 'bot', popupText, null, botTag, null));
-  waitForBotReply(sid, botKey).then((reply) => {
+  replyPromise.then((reply) => {
     if (reply && reply.text) {
       if (reply.text === popupText && !(reply.buttons && reply.buttons.length)) return; // pure duplicate of the popup just shown
       pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, botTag, reply.tgMsgId || null));
