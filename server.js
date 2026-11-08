@@ -338,17 +338,18 @@ const userbotPool = []; // pool accounts, in the order their sessions were added
 let nextAccountNum = 1;
 
 // Lazy-load the GramJS (`telegram`) package once. Returns
-// { TelegramClient, StringSession, NewMessage, Api } or null when the
-// package is missing (bridge stays disabled, live chat keeps working).
+// { TelegramClient, StringSession, NewMessage, MessageEdited, Api } or
+// null when the package is missing (bridge stays disabled, live chat
+// keeps working).
 let _tgLib = null;
 function telegramLib() {
   if (_tgLib) return _tgLib;
   try {
     const { TelegramClient } = require('telegram');
     const { StringSession } = require('telegram/sessions');
-    const { NewMessage } = require('telegram/events');
+    const { NewMessage, MessageEdited } = require('telegram/events');
     const { Api } = require('telegram');
-    _tgLib = { TelegramClient, StringSession, NewMessage, Api };
+    _tgLib = { TelegramClient, StringSession, NewMessage, MessageEdited, Api };
     return _tgLib;
   } catch (e) { return null; }
 }
@@ -547,6 +548,9 @@ async function connectAccount(acc) {
     if (!acc.client) {
       acc.client = new lib.TelegramClient(new lib.StringSession(acc.sessionStr), TG_API_ID, TG_API_HASH, { connectionRetries: 5 });
       acc.client.addEventHandler(onUserbotMessage, new lib.NewMessage({}));
+      // v8.5: most bots EDIT their message when a button is tapped — listen
+      // for edits too, or the visitor sees nothing.
+      if (lib.MessageEdited) acc.client.addEventHandler(onUserbotMessageEdited, new lib.MessageEdited({}));
     }
     await acc.client.connect();
     // Verify the session really logged in as a user (and log who it is,
@@ -660,9 +664,62 @@ function clearPending(q, req) {
 //  - A message with no text is ignored (we only route text replies).
 //  - If the bot never replies, the request times out after 30s and resolves
 //    with null — nothing is sent to the visitor (no canned fallback).
+// v8.5: text for a NON-text bot reply (photo, video, document, ...).
+// Uses the media caption when there is one; otherwise a short Bengali
+// description of the media type, so the visitor SEES something instead
+// of silence. Returns '' when the message has neither text nor media.
+function mediaText(msg) {
+  if (!msg) return '';
+  try {
+    const cap = String((msg.text !== undefined && msg.text !== null ? msg.text : (msg.message || ''))).trim();
+    if (cap) return cap;
+    const media = msg.media;
+    const cls = media && media.className ? String(media.className) : '';
+    if (msg.photo || /Photo/i.test(cls)) return '📷 ছবি পাঠিয়েছে';
+    if (msg.video || /Video/i.test(cls)) return '🎥 ভিডিও পাঠিয়েছে';
+    if (msg.voice || /Voice/i.test(cls)) return '🎙️ ভয়েস মেসেজ পাঠিয়েছে';
+    if (msg.document || msg.sticker || /Document|Sticker/i.test(cls)) {
+      if (/Sticker/i.test(cls) || msg.sticker) return '🎭 স্টিকার পাঠিয়েছে';
+      return '📄 ফাইল পাঠিয়েছে';
+    }
+    if (msg.audio || /Audio/i.test(cls)) return '🎵 অডিও পাঠিয়েছে';
+    if (msg.gif || /Gif|Animation/i.test(cls)) return '🎬 GIF পাঠিয়েছে';
+    if (msg.webpage || /WebPage/i.test(cls)) return '🔗 লিংক পাঠিয়েছে';
+    if (media) return '📎 মিডিয়া পাঠিয়েছে';
+  } catch (e) { /* fall through */ }
+  return '';
+}
+
 async function onUserbotMessage(event) {
   try {
     const msg = event && event.message;
+    routeBotOutput(msg, false);
+  } catch (e) {
+    console.error('[userbot] event handler error:', e && e.message ? e.message : e);
+  }
+}
+
+// v8.5: a bot EDITED one of its messages (this is what most bots do when
+// you tap an inline button — they rewrite the menu in place instead of
+// sending a new message). Route the edited text + buttons exactly like a
+// new reply, so the visitor sees the next step.
+async function onUserbotMessageEdited(event) {
+  try {
+    const msg = event && event.message;
+    routeBotOutput(msg, true);
+  } catch (e) {
+    console.error('[userbot] edit handler error:', e && e.message ? e.message : e);
+  }
+}
+
+// Shared routing for a bot's output — a NEW message (isEdit=false) or an
+// EDITED message (isEdit=true). Extracts the text (or a media description
+// when there is no text), matches it to the visitor waiting on this bot,
+// and resolves their pending request. Edits skip the replyTo check: an
+// edited message is the bot's own menu being rewritten, not a reply to
+// the visitor's sent message.
+function routeBotOutput(msg, isEdit) {
+  try {
     if (!msg) return;
     // Log every incoming message the userbot sees (sender + first 80 chars),
     // so a missing bot reply is visible in the logs instead of silent.
@@ -671,17 +728,23 @@ async function onUserbotMessage(event) {
     if (msg.out === true) { console.log(`[userbot] <- outgoing (ignored) to=${senderId} ${msgPreview(rawText)}`); return; }
     if (!senderId) { console.log(`[userbot] <- incoming with no sender id (ignored) ${msgPreview(rawText)}`); return; }
     const botKey = botIdToUsername.get(senderId);
-    console.log(`[userbot] <- incoming from=${senderId} bot=${botKey || '(unknown)'} ${msgPreview(rawText)}`);
+    console.log(`[userbot] <- ${isEdit ? 'EDITED' : 'incoming'} from=${senderId} bot=${botKey || '(unknown)'} ${msgPreview(rawText)}`);
     if (!botKey) return; // not from a connected income bot
     const q = botQueues.get(botKey);
     if (!q || !q.pending) { console.log(`[userbot] no visitor waiting on @${botKey} (ignored)`); return; }
-    const replyToId = msg.replyTo ? msg.replyTo.replyToMsgId : undefined;
-    if (replyToId !== undefined && replyToId !== null && Number(replyToId) !== Number(q.pending.sentMsgId)) {
-      console.log(`[userbot] replyTo ${replyToId} != sent ${q.pending.sentMsgId} (ignored)`);
-      return;
+    if (!isEdit) {
+      const replyToId = msg.replyTo ? msg.replyTo.replyToMsgId : undefined;
+      if (replyToId !== undefined && replyToId !== null && Number(replyToId) !== Number(q.pending.sentMsgId)) {
+        console.log(`[userbot] replyTo ${replyToId} != sent ${q.pending.sentMsgId} (ignored)`);
+        return;
+      }
     }
-    const text = rawText;
-    if (!text) { console.log('[userbot] non-text reply (ignored, still waiting)'); return; } // non-text reply — keep waiting for a text reply (or timeout)
+    // v8.5: a non-text reply (photo, video, file, ...) used to be ignored
+    // and the visitor waited until the 30s timeout. Now use the caption
+    // or a short media description, so SOMETHING always arrives.
+    let text = rawText;
+    if (!text) text = mediaText(msg);
+    if (!text) { console.log('[userbot] empty reply (ignored, still waiting)'); return; }
     const pending = q.pending;
     clearPending(q, pending);
     // Extract the inline keyboard (options) so the site can show them as
@@ -690,11 +753,11 @@ async function onUserbotMessage(event) {
     const buttons = extractInlineButtons(msg);
     const tgMsgId = (msg && msg.id !== undefined && msg.id !== null) ? Number(msg.id) : null;
     botReplyMsgBySession.set(pending.sessionId, { msg, botKey, buttons, tgMsgId, time: Date.now() });
-    console.log(`[userbot] reply from @${botKey} matched session ${pending.sessionId} — routing to visitor.${buttons ? ` (${buttons.length} button row(s))` : ''}`);
+    console.log(`[userbot] ${isEdit ? 'edit' : 'reply'} from @${botKey} matched session ${pending.sessionId} — routing to visitor.${buttons ? ` (${buttons.length} button row(s))` : ''}`);
     pending.resolve({ text, buttons, tgMsgId });
     processBotQueue(botKey);
   } catch (e) {
-    console.error('[userbot] event handler error:', e && e.message ? e.message : e);
+    console.error('[userbot] route error:', e && e.message ? e.message : e);
   }
 }
 
@@ -1244,10 +1307,18 @@ app.post('/api/click', async (req, res) => {
   if (label && clickBot && isCommandBlocked(clickBot, label)) {
     return res.json({ ok: false, error: 'blocked' });
   }
+  // v8.5: capture the bot's popup answer to this tap (answerCallbackQuery).
+  // Some bots answer a tap with ONLY a popup and no message — without this
+  // the visitor sees nothing. The popup text is pushed right away; if the
+  // bot then sends/edits a message with the SAME text and no buttons, that
+  // duplicate is skipped (a message WITH buttons is always shown — the
+  // visitor needs the buttons to continue).
+  let popupText = '';
   try {
     // Click the button on the real message (sends the callback to the bot).
-    await targetMsg.click({ i: row, j: col });
-    console.log(`[userbot] clicked @${botKey} button [${row},${col}] ${msgPreview(label)} (session ${sid}) — waiting for the bot's reply.`);
+    const clickResult = await targetMsg.click({ i: row, j: col });
+    if (clickResult && clickResult.message) popupText = String(clickResult.message).trim();
+    console.log(`[userbot] clicked @${botKey} button [${row},${col}] ${msgPreview(label)} (session ${sid}) — waiting for the bot's reply.${popupText ? ' (popup: ' + msgPreview(popupText) + ')' : ''}`);
   } catch (e) {
     console.error('[userbot] click failed:', e && e.message ? e.message : e);
     return res.json({ ok: false, error: 'click failed' });
@@ -1257,8 +1328,12 @@ app.post('/api/click', async (req, res) => {
   // per-bot filter (m.bot === selectedBot) matches it.
   const botEntry = findBotByUsername(botKey);
   const botTag = botEntry ? botEntry.username : botKey;
+  if (popupText) pushToVisitor(sid, newMsg(getSession(sid), 'bot', popupText, null, botTag, null));
   waitForBotReply(sid, botKey).then((reply) => {
-    if (reply && reply.text) pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, botTag, reply.tgMsgId || null));
+    if (reply && reply.text) {
+      if (reply.text === popupText && !(reply.buttons && reply.buttons.length)) return; // pure duplicate of the popup just shown
+      pushToVisitor(sid, newMsg(getSession(sid), 'bot', reply.text, reply.buttons || null, botTag, reply.tgMsgId || null));
+    }
   }).catch(() => { /* ignore — no canned fallback */ });
   return res.json({ ok: true, clicked: true });
 });
@@ -1349,6 +1424,7 @@ app.post('/api/admin/tg-login-start', async (req, res) => {
     // Register the message handler now so the account is ready the moment
     // it joins the pool (after verify).
     client.addEventHandler(onUserbotMessage, new lib.NewMessage({}));
+    if (lib.MessageEdited) client.addEventHandler(onUserbotMessageEdited, new lib.MessageEdited({})); // v8.5: edits too
     await client.connect();
     const sent = await client.sendCode({ apiId: TG_API_ID, apiHash: TG_API_HASH }, phone);
     pendingLogins.set(phone, { client, phoneCodeHash: sent && sent.phoneCodeHash ? sent.phoneCodeHash : '', createdAt: Date.now() });
