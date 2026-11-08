@@ -67,6 +67,9 @@
   function fitChat() {
     var page = document.getElementById('mla-bot-page');
     if (!page) return;
+    // v9.7: collapse the wrapper gap first, so the top offset is measured
+    // after the band above the chat is gone.
+    collapseAncestors();
     var botH = 0;
     var botEl = document.getElementById('bottomNav');
     if (botEl) botH = botEl.offsetHeight || 0;
@@ -128,6 +131,65 @@
           node = node.parentElement;
         }
         return;
+      }
+      // v9.7: the title is not always an <h1> — the theme/Elementor can
+      // render it as a plain <div>/<span> (or the <h1> was already
+      // removed by a previous run). Hunt any element whose WHOLE trimmed
+      // text is exactly "MLA Bot" and hide it the same way. NEVER touch
+      // anything inside #mla-bot-page: the chat's own header title
+      // (#mla-bot-title) also reads "MLA Bot" and must stay.
+      var pageEl = document.getElementById('mla-bot-page');
+      var all = document.querySelectorAll('body *');
+      var found = null;
+      for (var j = 0; j < all.length; j++) {
+        var el = all[j];
+        if (pageEl && (el === pageEl || pageEl.contains(el))) continue;
+        var t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!/^mla\s*bot$/i.test(t)) continue;
+        // Deepest match wins (a wrapper's text matches too, but hiding
+        // the innermost element keeps the change smallest).
+        if (!found || el.contains(found)) found = el;
+      }
+      if (found) {
+        found.style.display = 'none';
+        var p = found.parentElement;
+        for (var k = 0; k < 3 && p; k++) {
+          var pt = (p.textContent || '').replace(/\s+/g, ' ').trim();
+          var ft = (found.textContent || '').replace(/\s+/g, ' ').trim();
+          if (pt && pt === ft) { p.style.display = 'none'; break; }
+          p = p.parentElement;
+        }
+      }
+    } catch (e) {}
+  }
+  // v9.7: collapse the wrapper padding/margin ABOVE the chat. v9.5/v9.6
+  // hid the title itself, but the ~200px blank band on fresh load comes
+  // from the Elementor/theme wrappers around the chat (section, column,
+  // text-editor widget, <article class="post-1777">) — their own
+  // padding/margin stays even with the title gone (header ends ~y92,
+  // chat starts ~y292). Walk up from #mla-bot-page and zero the
+  // top/bottom padding + margin on each DIV/SECTION/ARTICLE ancestor,
+  // stopping at <main> or <body>. The site header (#mla-topbar), bottom
+  // menu (#bottomNav), <main> and <body> are never touched; no negative
+  // margins, no position/top moves — only the chat's own ancestors lose
+  // their vertical spacing. Runs at init, on load, and at 500ms/1500ms
+  // (same as the other init helpers), and inside fitChat() before it
+  // measures, so the height is computed after the gap is gone.
+  function collapseAncestors() {
+    try {
+      var page = document.getElementById('mla-bot-page');
+      if (!page) return;
+      var node = page.parentElement;
+      while (node) {
+        var tag = (node.tagName || '').toUpperCase();
+        if (tag === 'MAIN' || tag === 'BODY') break;
+        if (tag === 'DIV' || tag === 'SECTION' || tag === 'ARTICLE') {
+          node.style.paddingTop = '0';
+          node.style.paddingBottom = '0';
+          node.style.marginTop = '0';
+          node.style.marginBottom = '0';
+        }
+        node = node.parentElement;
       }
     } catch (e) {}
   }
@@ -427,7 +489,7 @@
     if (b) {
       titleEl.textContent = b.name || b.username;
       avatarEl.textContent = avatarInitial(b);
-      subEl.textContent = '@' + b.username + ' • online • v9.6';
+      subEl.textContent = '@' + b.username + ' • online • v9.7';
       subEl.style.color = '#0088cc';
       addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
     }
@@ -500,7 +562,7 @@
             if (b) {
               titleEl.textContent = b.name || b.username;
               avatarEl.textContent = avatarInitial(b);
-              subEl.textContent = '@' + b.username + ' • online • v9.6';
+              subEl.textContent = '@' + b.username + ' • online • v9.7';
               subEl.style.color = '#0088cc';
             }
             fetchCommands(selectedBot);
@@ -563,18 +625,21 @@
   });
   // v9.5: fit the chat between the fixed header + bottom menu, hide the
   // floating Spin Now button, and hide the redundant page title. v9.6:
-  // also apply the theme colours directly (applyTheme). Re-fit
-  // on resize/orientationchange and again shortly after load (the bottom
-  // menu and the title can render late, after this script).
+  // also apply the theme colours directly (applyTheme). v9.7: also
+  // collapse the wrapper padding/margin above the chat
+  // (collapseAncestors). Re-fit on resize/orientationchange and again
+  // shortly after load (the bottom menu and the title can render late,
+  // after this script).
   fitChat();
   hideSpinButton();
   hidePageTitle();
+  collapseAncestors();
   applyTheme();
   window.addEventListener('resize', fitChat);
   window.addEventListener('orientationchange', fitChat);
-  window.addEventListener('load', function () { fitChat(); hideSpinButton(); hidePageTitle(); applyTheme(); });
-  setTimeout(function () { fitChat(); hideSpinButton(); hidePageTitle(); applyTheme(); }, 500);
-  setTimeout(function () { fitChat(); hideSpinButton(); hidePageTitle(); applyTheme(); }, 1500);
+  window.addEventListener('load', function () { fitChat(); hideSpinButton(); hidePageTitle(); collapseAncestors(); applyTheme(); });
+  setTimeout(function () { fitChat(); hideSpinButton(); hidePageTitle(); collapseAncestors(); applyTheme(); }, 500);
+  setTimeout(function () { fitChat(); hideSpinButton(); hidePageTitle(); collapseAncestors(); applyTheme(); }, 1500);
   if (sessionId) loadHistory();
   fetchBots();
   connect();
