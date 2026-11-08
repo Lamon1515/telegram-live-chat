@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MLA Bots — Admin Panel
  * Description: WordPress admin panel (wp-admin only) to manage the connected Telegram income bots and the Telegram user accounts that power the userbot bridge. Saves to wp_options and syncs to the Render live-chat server. Never a user page.
- * Version: 1.1.6
+ * Version: 1.1.7
  * Author: MLA
  *
  * MLA Bots — Admin Panel (wp-admin only, NEVER a user page)
@@ -25,7 +25,7 @@
  * OTP (the OTP goes to that phone); the returned session string is saved
  * into wp_options straight away.
  *
- * FRONT-END (v9.3): this plugin also enqueues the MLA Bot page's chat
+ * FRONT-END (v9.4): this plugin also enqueues the MLA Bot page's chat
  * JavaScript (bot-page-script.js) in the footer, only on page 1777. The
  * page block holds HTML + CSS only — an inline <script> there never runs
  * because the theme loads page content client-side. See the
@@ -176,8 +176,8 @@ add_action('mla_bots_hourly_sync', function () {
     // On failure: stay silent — the next hourly run retries.
 });
 
-// --- v9.3: front-end chat script for the MLA Bot page (?page_id=1777) ---
-// The page holds its HTML + CSS in a Custom HTML block, but the theme loads
+// --- v9.4: front-end chat script for the MLA Bot page (?page_id=1777) ---
+// The page holds its HTML in a Custom HTML block (CSS now comes from this plugin's wp_head, v9.4), but the theme loads
 // page content client-side (PJAX-style), which leaves an inline <script>
 // inside that block inert — the v9.0 Telegram design showed, yet the bot
 // picker never populated and the form submitted as a plain form. The chat
@@ -187,8 +187,106 @@ add_action('mla_bots_hourly_sync', function () {
 // always executes. is_page(1777) covers the page whether it is reached by
 // permalink or by ?page_id=1777 (and even if it were the front page). No
 // dependencies — the script is self-contained (it must NOT depend on
-// jQuery). Version '9.3' cache-busts after updates. If the JS file is
+// jQuery). Version '9.4' cache-busts after updates. If the JS file is
 // missing, nothing is enqueued (no fatal).
+// --- v9.4: MLA Bot page CSS via wp_head (page 1777 only) ---
+// The previous build put ALL of this CSS in a <style> block inside the Custom HTML block
+// snippet. WordPress/Elementor strips (or never applies) <style> inside
+// post content, so NONE of it reached the live page: the CSS variables
+// were undefined (every var(--...) invalid -> transparent backgrounds,
+// text inheriting the site's white dark-mode colour -> invisible in dark
+// mode) and the overflow/pin rules never applied (page scrolled, composer
+// below the fold on desktop). The fix: the CSS lives here, in the plugin,
+// output as a real <style id="mla-bot-page-css"> in <head>, only on
+// the MLA Bot page. Values are verbatim from the previous snippet (only
+// the comment labels changed). Priority 5 so it lands early.
+// Dark is html:not([data-theme="light"]) — the site REMOVES data-theme
+// for dark; there is no dark value anywhere.
+add_action('wp_head', function () {
+    if (!is_page(1777)) return;
+    echo '<style id="mla-bot-page-css">' . "\n";
+    echo <<<'MLA_BOT_PAGE_CSS'
+
+/* ---- v9.4 theme variables ---- */
+/* Light (Telegram light palette). :root carries the light values so the
+   chat is never unstyled; html[data-theme="light"] states it explicitly. */
+:root, html[data-theme="light"]{
+  --mla-bg:#fff; --mla-list-bg:#e9edf1;
+  --mla-bubble-in:#fff; --mla-bubble-out:#cde9f8;
+  --mla-text:#111827; --mla-text2:#6b7280; --mla-meta:#9aa8b5;
+  --mla-border:#e5e7eb; --mla-border-soft:#f0f2f5;
+  --mla-chip-bg:#f0f2f5; --mla-chip-text:#111827; --mla-chip-active:#e3ebf1;
+  --mla-ibtn-bg:#e8f1f8; --mla-ibtn-text:#0088cc; --mla-ibtn-active:#d9e9f6;
+  --mla-sys-bg:#eef2f5; --mla-sys-text:#5b6b7a;
+  --mla-input-bg:#fff; --mla-input-text:#111827;
+  --mla-picker-active:#e8f1f8;
+  --mla-hdr-bg:rgba(255,255,255,.88); --mla-hdr-fallback:#fff;
+  --mla-sh-a:rgba(16,24,40,.10); --mla-sh-b:rgba(16,24,40,.06);
+  --mla-dot:rgba(0,0,0,0.05);
+}
+/* Dark (Telegram dark palette). The site REMOVES data-theme for dark —
+   there is no dark value, so dark is html:not([data-theme="light"]). */
+html:not([data-theme="light"]){
+  --mla-bg:#17212b; --mla-list-bg:#0e1621;
+  --mla-bubble-in:#182533; --mla-bubble-out:#2b5278;
+  --mla-text:#e8eef4; --mla-text2:#7f91a4; --mla-meta:#7f91a4;
+  --mla-border:#1c2733; --mla-border-soft:#1c2733;
+  --mla-chip-bg:#17212b; --mla-chip-text:#e8eef4; --mla-chip-active:#1f2c3a;
+  --mla-ibtn-bg:#2b5278; --mla-ibtn-text:#64b5ef; --mla-ibtn-active:#35608f;
+  --mla-sys-bg:#17212b; --mla-sys-text:#7f91a4;
+  --mla-input-bg:#17212b; --mla-input-text:#e8eef4;
+  --mla-picker-active:#1f2c3a;
+  --mla-hdr-bg:rgba(23,33,43,.88); --mla-hdr-fallback:#17212b;
+  --mla-sh-a:rgba(0,0,0,.35); --mla-sh-b:rgba(0,0,0,.25);
+  --mla-dot:rgba(255,255,255,0.04);
+}
+/* ---- v9.4: this page never scrolls — the chat list scrolls internally.
+   Scoped to this page only, so the fixed header + bottom menu never move. */
+body.page-id-1777{overflow:hidden;}
+/* ---- v9.4: keep the site chrome VISIBLE but pinned stable on this page.
+   The bottom menu has a `bottom` transition that slides it (the shake);
+   pin it at bottom:0 and kill the transition. Same for the top header. */
+body.page-id-1777 #bottomNav{bottom:0!important;transition:none!important;}
+body.page-id-1777 #mla-topbar{transition:none!important;}
+/* Header: frosted translucent (solid fallback) + soft shadow. */
+#mla-bot-page .mla-hdr{background:var(--mla-hdr-fallback);background:var(--mla-hdr-bg);-webkit-backdrop-filter:blur(14px) saturate(1.4);backdrop-filter:blur(14px) saturate(1.4);box-shadow:0 1px 12px var(--mla-sh-a);position:relative;z-index:5;}
+/* Header avatar: richer Telegram-blue gradient + soft ring. */
+#mla-bot-page .mla-hdr-av{background-color:#1e96c8;background:linear-gradient(135deg,#4db2e8,#1a8fc4 55%,#0f7fb8);box-shadow:0 0 0 2px rgba(255,255,255,.9),0 2px 8px rgba(0,136,204,.35);}
+/* Picker / commands: never squeeze the chat list; picker scrolls internally. */
+#mla-bot-picker{flex:0 0 auto;max-height:38vh;overflow-y:auto;overscroll-behavior:contain;}
+#mla-bot-commands{flex:0 0 auto;overscroll-behavior-x:contain;scrollbar-width:none;}
+#mla-bot-commands::-webkit-scrollbar{display:none;}
+/* Composer: stays in normal flow at the bottom of the flex column. */
+#mla-bot-form{flex:0 0 auto;}
+/* Send button: soft glow + press animation. */
+#mla-bot-page .mla-send{transition:transform .12s ease,box-shadow .12s ease;}
+#mla-bot-page .mla-send:active{transform:scale(.92);box-shadow:0 1px 4px rgba(0,136,204,.3);}
+/* Command chips (JS-created): gentle press. */
+#mla-bot-page .mla-chip{transition:transform .12s ease,background .12s ease;}
+#mla-bot-page .mla-chip:active{transform:scale(.96);background:var(--mla-chip-active);}
+/* Inline-keyboard buttons (JS-created): press feedback. */
+#mla-bot-page .mla-ibtn{transition:transform .12s ease,background .12s ease;}
+#mla-bot-page .mla-ibtn:active{transform:scale(.98);background:var(--mla-ibtn-active);}
+/* Input placeholder follows the theme. */
+#mla-bot-page #mla-bot-input::placeholder{color:var(--mla-text2);}
+/* New-message entrance: fade + tiny rise, ~150ms, only for live arrivals
+   (JS adds .mla-msg-in to new rows; history re-renders do not get it). */
+@keyframes mlaMsgIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+#mla-bot-page .mla-msg-in{animation:mlaMsgIn .16s ease-out;}
+@media (prefers-reduced-motion:reduce){#mla-bot-page .mla-msg-in{animation:none;}}
+/* ---- Mobile (≤640px): the chat fills the space between the fixed site
+   header and the fixed bottom menu. Height is set exactly by JS
+   (calc(100dvh - headerH - bottomNavH)); the CSS 100dvh here is only the
+   fallback before JS runs. NOTE: no !important on height — the JS inline
+   height must win over this rule. ---- */
+@media (max-width:640px){
+  #mla-bot-page{max-width:100%!important;margin:0!important;height:100vh;height:100dvh;}
+  #mla-bot-list{height:auto!important;flex:1 1 auto!important;min-height:0!important;}
+}
+MLA_BOT_PAGE_CSS;
+    echo '</style>' . "\n";
+}, 5);
+
 add_action('wp_enqueue_scripts', function () {
     if (!is_page(1777)) return;
     $js_path = plugin_dir_path(__FILE__) . 'bot-page-script.js';
@@ -197,7 +295,7 @@ add_action('wp_enqueue_scripts', function () {
         'mla-bot-page-script',
         plugin_dir_url(__FILE__) . 'bot-page-script.js',
         array(),
-        '9.3',
+        '9.4',
         true
     );
 });
