@@ -76,6 +76,20 @@
     var topGap = 0;
     try { topGap = page.getBoundingClientRect().top || 0; } catch (e) { topGap = 0; }
     if (topGap < 0) topGap = 0;
+    // v9.8 fallback: if a gap is STILL left above the chat (v9.7 removed
+    // ~70px but ~131px survived — padding/margin on <main> or on a
+    // header/title-area wrapper the collapse never reached), pull the
+    // chat up over the empty band with a negative top margin, leaving
+    // only ~8px under the site header. The band is blank, so nothing
+    // overlaps — only the fixed site header sits above it. Only when
+    // the gap is over 12px; otherwise the margin is left alone.
+    // Re-measure after pulling, so the height below uses the true
+    // offset. Assignment (not +=), so repeated runs never accumulate.
+    if (topGap > 12) {
+      page.style.marginTop = (-(topGap - 8)) + 'px';
+      try { topGap = page.getBoundingClientRect().top || 0; } catch (e) {}
+      if (topGap < 0) topGap = 0;
+    }
     var h = window.innerHeight - topGap - botH;
     if (h < 200) h = 200;
     // vh fallback first (older browsers ignore the px line after it);
@@ -162,19 +176,23 @@
       }
     } catch (e) {}
   }
-  // v9.7: collapse the wrapper padding/margin ABOVE the chat. v9.5/v9.6
-  // hid the title itself, but the ~200px blank band on fresh load comes
-  // from the Elementor/theme wrappers around the chat (section, column,
-  // text-editor widget, <article class="post-1777">) — their own
-  // padding/margin stays even with the title gone (header ends ~y92,
-  // chat starts ~y292). Walk up from #mla-bot-page and zero the
-  // top/bottom padding + margin on each DIV/SECTION/ARTICLE ancestor,
-  // stopping at <main> or <body>. The site header (#mla-topbar), bottom
-  // menu (#bottomNav), <main> and <body> are never touched; no negative
-  // margins, no position/top moves — only the chat's own ancestors lose
-  // their vertical spacing. Runs at init, on load, and at 500ms/1500ms
-  // (same as the other init helpers), and inside fitChat() before it
-  // measures, so the height is computed after the gap is gone.
+  // v9.7/v9.8: collapse the wrapper padding/margin ABOVE the chat.
+  // v9.5/v9.6 hid the title itself, but the blank band on fresh load
+  // comes from the Elementor/theme wrappers around the chat (section,
+  // column, text-editor widget, <article class="post-1777">) — their
+  // own padding/margin stays even with the title gone (header ends
+  // ~y92, chat started ~y292 in v9.6, ~y224 in v9.7). v9.7 walked up
+  // and zeroed DIV/SECTION/ARTICLE ancestors but stopped at <main> —
+  // it removed ~70px and ~131px survived. v9.8 walks all the way to
+  // <body> and also zeroes HEADER and MAIN ancestors (Blocksy
+  // .site-main / the title-area wrapper are the prime suspects). The
+  // site header (#mla-topbar), bottom menu (#bottomNav) and <body>
+  // are never touched; no position/top moves — only the chat's own
+  // ancestors lose their vertical spacing. Runs at init, on load, and
+  // at 500ms/1500ms (same as the other init helpers), and inside
+  // fitChat() before it measures, so the height is computed after the
+  // gap is gone. (The negative-margin fallback for any gap that still
+  // survives lives in fitChat(), not here.)
   function collapseAncestors() {
     try {
       var page = document.getElementById('mla-bot-page');
@@ -182,8 +200,10 @@
       var node = page.parentElement;
       while (node) {
         var tag = (node.tagName || '').toUpperCase();
-        if (tag === 'MAIN' || tag === 'BODY') break;
-        if (tag === 'DIV' || tag === 'SECTION' || tag === 'ARTICLE') {
+        // v9.8: stop only at <body> — <main> and <header> are
+        // collapsed too (v9.7 stopped at <main> and left ~131px).
+        if (tag === 'BODY') break;
+        if (tag === 'DIV' || tag === 'SECTION' || tag === 'ARTICLE' || tag === 'HEADER' || tag === 'MAIN') {
           node.style.paddingTop = '0';
           node.style.paddingBottom = '0';
           node.style.marginTop = '0';
@@ -489,7 +509,7 @@
     if (b) {
       titleEl.textContent = b.name || b.username;
       avatarEl.textContent = avatarInitial(b);
-      subEl.textContent = '@' + b.username + ' • online • v9.7';
+      subEl.textContent = '@' + b.username + ' • online • v9.8';
       subEl.style.color = '#0088cc';
       addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
     }
@@ -562,7 +582,7 @@
             if (b) {
               titleEl.textContent = b.name || b.username;
               avatarEl.textContent = avatarInitial(b);
-              subEl.textContent = '@' + b.username + ' • online • v9.7';
+              subEl.textContent = '@' + b.username + ' • online • v9.8';
               subEl.style.color = '#0088cc';
             }
             fetchCommands(selectedBot);
@@ -627,7 +647,9 @@
   // floating Spin Now button, and hide the redundant page title. v9.6:
   // also apply the theme colours directly (applyTheme). v9.7: also
   // collapse the wrapper padding/margin above the chat
-  // (collapseAncestors). Re-fit on resize/orientationchange and again
+  // (collapseAncestors). v9.8: collapse reaches <main>/<header> too,
+  // and fitChat() pulls the chat up with a negative top margin if a
+  // gap still survives. Re-fit on resize/orientationchange and again
   // shortly after load (the bottom menu and the title can render late,
   // after this script).
   fitChat();
