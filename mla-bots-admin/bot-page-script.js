@@ -185,7 +185,12 @@
   // and zeroed DIV/SECTION/ARTICLE ancestors but stopped at <main> —
   // it removed ~70px and ~131px survived. v9.8 walks all the way to
   // <body> and also zeroes HEADER and MAIN ancestors (Blocksy
-  // .site-main / the title-area wrapper are the prime suspects). The
+  // .site-main / the title-area wrapper are the prime suspects). v9.9:
+  // ANY tag is collapsed now (the last ~31px can sit on a non-standard
+  // wrapper), and every ancestor also gets overflow:visible — v9.8's
+  // negative-margin pull-up left the header bar's top ~23px hidden
+  // behind an overflow:hidden ancestor (flat-topped avatar, "gmail"
+  // half-visible), and the clipped band read as a ~31px gap. The
   // site header (#mla-topbar), bottom menu (#bottomNav) and <body>
   // are never touched; no position/top moves — only the chat's own
   // ancestors lose their vertical spacing. Runs at init, on load, and
@@ -203,11 +208,23 @@
         // v9.8: stop only at <body> — <main> and <header> are
         // collapsed too (v9.7 stopped at <main> and left ~131px).
         if (tag === 'BODY') break;
-        if (tag === 'DIV' || tag === 'SECTION' || tag === 'ARTICLE' || tag === 'HEADER' || tag === 'MAIN') {
+        // Never touch the fixed site chrome or <body> itself.
+        if (node.id !== 'mla-topbar' && node.id !== 'bottomNav') {
+          // v9.9: ANY tag now (v9.8 only did DIV/SECTION/ARTICLE/
+          // HEADER/MAIN) — the remaining ~31px can live on a
+          // non-standard wrapper (<p>, list, figure…). Zero the
+          // vertical spacing on every ancestor.
           node.style.paddingTop = '0';
           node.style.paddingBottom = '0';
           node.style.marginTop = '0';
           node.style.marginBottom = '0';
+          // v9.9: overflow visible, so a pulled-up chat is never
+          // clipped by an ancestor — v9.8's negative-margin pull-up
+          // left the header bar's top ~23px hidden behind an
+          // overflow:hidden ancestor (flat-topped avatar, "gmail"
+          // half-visible) and the clipped band read as a ~31px gap.
+          // #mla-bot-page itself keeps its own overflow:hidden.
+          node.style.overflow = 'visible';
         }
         node = node.parentElement;
       }
@@ -509,7 +526,7 @@
     if (b) {
       titleEl.textContent = b.name || b.username;
       avatarEl.textContent = avatarInitial(b);
-      subEl.textContent = '@' + b.username + ' • online • v9.8';
+      subEl.textContent = '@' + b.username + ' • online • v9.9';
       subEl.style.color = '#0088cc';
       addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
     }
@@ -582,7 +599,7 @@
             if (b) {
               titleEl.textContent = b.name || b.username;
               avatarEl.textContent = avatarInitial(b);
-              subEl.textContent = '@' + b.username + ' • online • v9.8';
+              subEl.textContent = '@' + b.username + ' • online • v9.9';
               subEl.style.color = '#0088cc';
             }
             fetchCommands(selectedBot);
@@ -649,9 +666,10 @@
   // collapse the wrapper padding/margin above the chat
   // (collapseAncestors). v9.8: collapse reaches <main>/<header> too,
   // and fitChat() pulls the chat up with a negative top margin if a
-  // gap still survives. Re-fit on resize/orientationchange and again
-  // shortly after load (the bottom menu and the title can render late,
-  // after this script).
+  // gap still survives. v9.9: ancestors also get overflow:visible (no
+  // more clipped header bar) and any-tag collapse. Re-fit on
+  // resize/orientationchange and again shortly after load (the bottom
+  // menu and the title can render late, after this script).
   fitChat();
   hideSpinButton();
   hidePageTitle();
