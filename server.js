@@ -126,6 +126,14 @@ function cleanBlockedCommands(list) {
   }
   return out;
 }
+// v1.1.15: per-bot profile picture (a Media Library image URL set in
+// wp-admin). Only an http(s) URL is accepted, max 500 chars; anything
+// else becomes '' (the frontend then falls back to the gradient letter).
+function cleanProfilePic(u) {
+  const s = String(u || '').trim().slice(0, 500);
+  if (!/^https?:\/\//i.test(s)) return '';
+  return s;
+}
 // Is the visitor's message blocked for this bot?
 // Slash message: only the first word counts (e.g. '/withdraw 100' blocks
 // on '/withdraw'). Plain-text message: the WHOLE trimmed text must equal
@@ -1276,6 +1284,8 @@ app.post('/api/admin/bots/sync', (req, res) => {
       name: String(b.name || username).slice(0, 100),
       description: String(b.description || '').slice(0, 500),
       how_to_earn: String(b.how_to_earn || '').slice(0, 500),
+      // v1.1.15: per-bot profile picture URL (set in wp-admin).
+      profile_pic: cleanProfilePic(b.profile_pic),
       // v8: per-bot command control (validated: max 20 each, command must
       // start with '/' and be <= 32 chars, label <= 30 chars).
       custom_commands: cleanCustomCommands(b.custom_commands),
