@@ -87,11 +87,16 @@ function saveRuntimeBots() {
 // ---------- v8: per-bot command control ----------
 // Each bot may carry:
 //   custom_commands: [{ label, command }] — extra commands the admin adds
-//     (shown as chips next to /start; label <= 30 chars, command starts
-//     with '/' and is <= 32 chars, max 20).
-//   blocked_commands: ['/withdraw', ...] — commands the admin blocks for
-//     this bot (max 20, each starts with '/'). A blocked command is never
-//     forwarded to Telegram; the visitor gets error 'blocked' instead.
+//     (shown as chips next to /start; label <= 30 chars, max 20).
+//     v8.1: the command is the EXACT text to send. If it starts with '/'
+//     it is a slash command (must match /^\/[A-Za-z0-9_]{1,31}$/ and be
+//     <= 32 chars). Otherwise it is plain text (any non-empty text,
+//     <= 64 chars) — e.g. "ব্যালেন্স" sends exactly that text.
+//   blocked_commands: ['/withdraw', ...] — entries the admin blocks for
+//     this bot (max 20). v8.1: slash entries block that slash command
+//     (first word); plain-text entries block a message whose WHOLE trimmed
+//     text equals the entry. A blocked entry is never forwarded to
+//     Telegram; the visitor gets error 'blocked' instead.
 function cleanCustomCommands(list) {
   if (!Array.isArray(list)) return [];
   const out = [];
@@ -99,8 +104,10 @@ function cleanCustomCommands(list) {
     if (!c || typeof c !== 'object') continue;
     const label = String(c.label || '').trim().slice(0, 30);
     const command = String(c.command || '').trim();
-    if (!label) continue;
-    if (!/^\/[A-Za-z0-9_]{1,31}$/.test(command) || command.length > 32) continue;
+    if (!label || !command) continue;
+    if (command.startsWith('/')) {
+      if (!/^\/[A-Za-z0-9_]{1,31}$/.test(command) || command.length > 32) continue;
+    } else if (command.length > 64) continue;
     if (out.some((o) => o.command.toLowerCase() === command.toLowerCase())) continue;
     out.push({ label, command });
   }
@@ -111,19 +118,28 @@ function cleanBlockedCommands(list) {
   const out = [];
   for (const c of list.slice(0, 20)) {
     const cmd = String(c || '').trim().toLowerCase();
-    if (!/^\/[a-z0-9_]{1,31}$/.test(cmd) || cmd.length > 32) continue;
+    if (!cmd) continue;
+    if (cmd.startsWith('/')) {
+      if (!/^\/[a-z0-9_]{1,31}$/.test(cmd) || cmd.length > 32) continue;
+    } else if (cmd.length > 64) continue;
     if (!out.includes(cmd)) out.push(cmd);
   }
   return out;
 }
-// Is the visitor's message a command that is blocked for this bot?
-// Only the first word counts (e.g. '/withdraw 100' blocks on '/withdraw').
-// Non-commands (plain text) are never blocked.
+// Is the visitor's message blocked for this bot?
+// Slash message: only the first word counts (e.g. '/withdraw 100' blocks
+// on '/withdraw'). Plain-text message: the WHOLE trimmed text must equal
+// a plain-text blocked entry (case-insensitive).
 function isCommandBlocked(bot, text) {
   if (!bot || !Array.isArray(bot.blocked_commands) || !bot.blocked_commands.length) return false;
-  const first = String(text || '').trim().split(/\s+/)[0].toLowerCase();
-  if (!first.startsWith('/')) return false;
-  return bot.blocked_commands.some((b) => String(b).toLowerCase() === first);
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if (t.startsWith('/')) {
+    const first = t.split(/\s+/)[0].toLowerCase();
+    return bot.blocked_commands.some((b) => String(b).toLowerCase() === first);
+  }
+  const low = t.toLowerCase();
+  return bot.blocked_commands.some((b) => String(b).toLowerCase() === low);
 }
 
 // ---------- v8: per-session secret ----------
@@ -1086,15 +1102,27 @@ app.get('/api/bots', (req, res) => {
 // always included unless it is blocked or already present. When the bot has
 // no real commands and no custom ones, the list is just [{command:'start'}].
 // Commands are returned WITHOUT the leading '/' (the site's chips add it),
-// matching the v7 format. The response also carries `blocked` (the bot's
-// blocked commands, with '/') so the page can hide the /start fallback chip
-// when /start itself is blocked.
+// matching the v7 format — EXCEPT v8.1 plain-text customs, whose `command`
+// IS the text itself. Every entry also carries `text`: the EXACT text to
+// send ('/name' for slash commands, as-is for plain text). The response
+// also carries `blocked` (the bot's blocked entries, slash with '/' and
+// plain text as-is) so the page can hide the /start fallback chip when
+// /start itself is blocked.
 app.get('/api/bots/:username/commands', async (req, res) => {
   const bot = findBotByUsername(req.params.username);
   if (!bot) return res.json({ ok: true, commands: [], blocked: [] });
-  const blockedSet = new Set((bot.blocked_commands || []).map((c) => String(c).toLowerCase()));
-  const isBlocked = (cmd) => blockedSet.has('/' + String(cmd).toLowerCase().replace(/^\//, ''));
-  const blocked = [...blockedSet];
+  // v8.1: blocked entries are either slash ('/withdraw') or plain text.
+  const blockedSlash = new Set();
+  const blockedPlain = new Set();
+  for (const c of (bot.blocked_commands || [])) {
+    const s = String(c || '').toLowerCase();
+    if (!s) continue;
+    if (s.startsWith('/')) blockedSlash.add(s);
+    else blockedPlain.add(s);
+  }
+  const isBlockedSlash = (cmd) => blockedSlash.has('/' + String(cmd).toLowerCase().replace(/^\//, ''));
+  const isBlockedPlain = (txt) => blockedPlain.has(String(txt).toLowerCase().trim());
+  const blocked = [...blockedSlash, ...blockedPlain];
   // Real commands from the bot itself (via the pool's best account).
   let real = [];
   if (isBridgeReady()) {
@@ -1108,7 +1136,10 @@ app.get('/api/bots/:username/commands', async (req, res) => {
       }));
       const list = (result && result.commands) || result || [];
       for (const c of (Array.isArray(list) ? list : [])) {
-        if (c && c.command) real.push({ command: String(c.command).replace(/^\//, ''), description: String(c.description || '') });
+        if (c && c.command) {
+          const name = String(c.command).replace(/^\//, '');
+          real.push({ command: name, description: String(c.description || ''), text: '/' + name });
+        }
       }
     } catch (e) {
       console.error('[userbot] GetBotCommands failed for @' + bot.username + ':', e && e.message ? e.message : e);
@@ -1116,17 +1147,27 @@ app.get('/api/bots/:username/commands', async (req, res) => {
     }
   }
   // Remove blocked commands, then append the admin's custom commands.
-  real = real.filter((c) => !isBlocked(c.command));
-  const seen = new Set(real.map((c) => c.command.toLowerCase()));
+  // v8.1: dedupe keys are '/name' for slash entries and the full text for
+  // plain-text entries (they send different text, so they never collide).
+  real = real.filter((c) => !isBlockedSlash(c.command));
+  const seen = new Set(real.map((c) => ('/' + c.command).toLowerCase()));
   for (const c of (bot.custom_commands || [])) {
     if (!c || !c.command) continue;
-    const cmd = String(c.command).replace(/^\//, '');
-    if (isBlocked(cmd) || seen.has(cmd.toLowerCase())) continue;
-    real.push({ command: cmd, description: String(c.label || '') });
-    seen.add(cmd.toLowerCase());
+    const raw = String(c.command).trim();
+    if (!raw) continue;
+    if (raw.startsWith('/')) {
+      const cmd = raw.replace(/^\//, '');
+      if (isBlockedSlash(cmd) || seen.has(raw.toLowerCase())) continue;
+      real.push({ command: cmd, description: String(c.label || ''), text: raw });
+      seen.add(raw.toLowerCase());
+    } else {
+      if (isBlockedPlain(raw) || seen.has(raw.toLowerCase())) continue;
+      real.push({ command: raw, description: String(c.label || ''), text: raw });
+      seen.add(raw.toLowerCase());
+    }
   }
   // Always include /start (unless blocked or already present).
-  if (!isBlocked('start') && !seen.has('start')) real.push({ command: 'start', description: '' });
+  if (!isBlockedSlash('start') && !seen.has('/start')) real.push({ command: 'start', description: '', text: '/start' });
   return res.json({ ok: true, commands: real, blocked });
 });
 
@@ -1185,7 +1226,7 @@ app.post('/api/click', async (req, res) => {
   }
   try {
     // Click the button on the real message (sends the callback to the bot).
-    await targetMsg.click(row, col);
+    await targetMsg.click({ i: row, j: col });
     console.log(`[userbot] clicked @${botKey} button [${row},${col}] ${msgPreview(label)} (session ${sid}) — waiting for the bot's reply.`);
   } catch (e) {
     console.error('[userbot] click failed:', e && e.message ? e.message : e);
