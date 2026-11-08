@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MLA Bots — Admin Panel
  * Description: WordPress admin panel (wp-admin only) to manage the connected Telegram income bots and the Telegram user accounts that power the userbot bridge. Saves to wp_options and syncs to the Render live-chat server. Never a user page.
- * Version: 1.1.2
+ * Version: 1.1.3
  * Author: MLA
  *
  * MLA Bots — Admin Panel (wp-admin only, NEVER a user page)
@@ -294,12 +294,12 @@ function mla_bots_admin_page() {
                 <td><textarea id="mla-bot-desc" rows="2" cols="50" placeholder="এই বট থেকে কিভাবে আয় হয়"></textarea></td></tr>
             <tr><th><label for="mla-bot-earn">কিভাবে আয়</label></th>
                 <td><textarea id="mla-bot-earn" rows="2" cols="50" placeholder="যেমন: টাস্ক করুন, রেফার করুন"></textarea></td></tr>
-            <tr><th><label for="mla-bot-custom">কাস্টম কমান্ড (v8.2)</label></th>
+            <tr><th><label for="mla-bot-custom">কাস্টম কমান্ড (v8.3)</label></th>
                 <td><textarea id="mla-bot-custom" rows="3" cols="50" placeholder="যেমন: ব্যালেন্স|/balance — প্রতি লাইনে একটি"></textarea>
-                <br><span class="description">এই ঘরটি খালি থাকে — নিজে লিখতে হবে। প্রতি লাইনে একটি: লেবেল|কমান্ড। স্ল্যাশ (/) দিয়ে শুরু হলে কমান্ড, নইলে সাধারণ লেখা — '|' ছাড়া শুধু লেখা লিখলেও চলবে (যেমন শুধু "ব্যালেন্স" লিখলে চিপে ট্যাপ করলে ঠিক ওই লেখাটাই যাবে)। সর্বোচ্চ ২০টি।</span></td></tr>
-            <tr><th><label for="mla-bot-blocked">বন্ধ কমান্ড (v8.2)</label></th>
+                <br><span class="description">এই ঘরটি খালি থাকে — নিজে লিখতে হবে। প্রতি লাইনে একটি: লেবেল|কমান্ড। স্ল্যাশ (/) দিয়ে শুরু হলে কমান্ড, নইলে সাধারণ লেখা — '|' ছাড়া শুধু লেখা লিখলেও চলবে (যেমন শুধু "ব্যালেন্স" লিখলে চিপে ট্যাপ করলে ঠিক ওই লেখাটাই যাবে)। সর্বোচ্চ ২০টি। ভুল ফরম্যাটের লাইন (যেমন স্পেস থাকা কমান্ড) সেভ হবে না — সেভের পর কোন লাইন বাদ পড়েছে জানিয়ে দেওয়া হবে।</span></td></tr>
+            <tr><th><label for="mla-bot-blocked">বন্ধ কমান্ড (v8.3)</label></th>
                 <td><input id="mla-bot-blocked" type="text" placeholder="যেমন: /withdraw, /admin" style="width:300px">
-                <br><span class="description">এই ঘরটি খালি থাকে — নিজে লিখতে হবে। কমা বা নতুন লাইন দিয়ে আলাদা করুন। স্ল্যাশ কমান্ড (/withdraw) বা সাধারণ লেখা — যেটা লিখবেন সেটাই ব্লক হবে; ভিজিটর পাঠালে "এই কমান্ডটি বন্ধ আছে।" দেখাবে। সর্বোচ্চ ২০টি।</span></td></tr>
+                <br><span class="description">এই ঘরটি খালি থাকে — নিজে লিখতে হবে। কমা বা নতুন লাইন দিয়ে আলাদা করুন। স্ল্যাশ কমান্ড (/withdraw) বা সাধারণ লেখা — যেটা লিখবেন সেটাই ব্লক হবে; ভিজিটর পাঠালে "এই কমান্ডটি বন্ধ আছে।" দেখাবে। সর্বোচ্চ ২০টি। ভুল ফরম্যাটের লাইন সেভ হবে না — সেভের পর জানিয়ে দেওয়া হবে।</span></td></tr>
         </table>
         <p><button id="mla-bot-add" class="button button-primary">➕ বট যুক্ত করুন</button>
         <button id="mla-bot-cancel-edit" class="button" style="display:none">✕ সম্পাদনা বাতিল</button>
@@ -364,6 +364,26 @@ function mla_bots_admin_page() {
             syncBtn.disabled = busy;
             addBtn.textContent = busy ? '⏳ সেভ হচ্ছে...' : (editingIndex >= 0 ? '💾 সংরক্ষণ করুন' : '➕ বট যুক্ত করুন');
         }
+        // v8.3: lines the user typed that could NOT be saved (wrong format)
+        // are collected by parseCustom/parseBlocked and named AFTER the save
+        // finishes — the save itself is never blocked; the valid lines are
+        // saved and the dropped lines are shown, so the user never has to
+        // discover on the user page that a line silently vanished.
+        var pendingSkipped = [];
+        function skippedWarningText() {
+            if (!pendingSkipped.length) return '';
+            var parts = pendingSkipped.map(function (s) { return "'" + s.line + "' (" + s.reason + ")"; });
+            return '⚠️ এই লাইনগুলো সেভ হয়নি: ' + parts.join(', ') + ' — / দিয়ে শুরু হলে শুধু অক্ষর/সংখ্যা/_ চলবে, স্পেস চলবে না।';
+        }
+        // The final status after a save: appends the skipped-lines warning
+        // (if any) and forces ok=false so setStatus scrolls it into view —
+        // unmissable. Consumes pendingSkipped (shown once only).
+        function finalStatus(msg, ok) {
+            var w = skippedWarningText();
+            pendingSkipped = [];
+            if (w) setStatus(msg + ' ' + w, false);
+            else setStatus(msg, ok);
+        }
         // v8.2: fetch a fresh nonce (admin-only action; it does not need the
         // old nonce — that is the point). Returns true when NONCE was updated.
         function refreshNonce() {
@@ -417,12 +437,16 @@ function mla_bots_admin_page() {
                 return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
             });
         }
-        // "লেবেল|কমান্ড" প্রতি লাইন -> [{label, command}]. v8.1: a line with
+        // "লেবেল|কমান্ড" প্রতি লাইন -> {list, skipped}. v8.1: a line with
         // NO '|' is plain text — the whole line is both label and command
         // (e.g. just "ব্যালেন্স" sends exactly that text). Slash commands
         // must match /[A-Za-z0-9_]{1,31} (<=32 chars); plain text <=64 chars.
+        // v8.3: lines that fail the format are NOT silently dropped any
+        // more — they are returned in `skipped` with a Bengali reason, so
+        // the save flow can name them to the user afterwards.
         function parseCustom(text) {
             var out = [];
+            var skipped = [];
             String(text || '').split('\n').forEach(function (line) {
                 var raw = line.trim();
                 if (!raw) return;
@@ -435,29 +459,42 @@ function mla_bots_admin_page() {
                     label = raw.slice(0, 30);
                     command = raw;
                 }
-                if (!label || !command) return;
+                if (!label || !command) { skipped.push({ line: raw, reason: 'খালি লাইন' }); return; }
                 if (command.charAt(0) === '/') {
-                    if (!/^\/[A-Za-z0-9_]{1,31}$/.test(command) || command.length > 32) return;
-                } else if (command.length > 64) return;
-                if (out.some(function (o) { return o.command.toLowerCase() === command.toLowerCase(); })) return;
+                    if (command.indexOf(' ') !== -1) { skipped.push({ line: raw, reason: 'স্পেস আছে' }); return; }
+                    if (!/^\/[A-Za-z0-9_]{1,31}$/.test(command) || command.length > 32) { skipped.push({ line: raw, reason: 'ভুল ফরম্যাট' }); return; }
+                } else if (command.length > 64) { skipped.push({ line: raw, reason: '৬৪ অক্ষরের বেশি' }); return; }
+                if (out.some(function (o) { return o.command.toLowerCase() === command.toLowerCase(); })) { skipped.push({ line: raw, reason: 'একই কমান্ড দুইবার' }); return; }
                 out.push({ label: label, command: command });
             });
-            return out.slice(0, 20);
+            if (out.length > 20) {
+                out.slice(20).forEach(function (o) { skipped.push({ line: o.command, reason: '২০টির বেশি (সর্বোচ্চ ২০টি)' }); });
+                out = out.slice(0, 20);
+            }
+            return { list: out, skipped: skipped };
         }
-        // "/withdraw, /admin" -> ['/withdraw', '/admin']. v8.1: split on
+        // "/withdraw, /admin" -> {list, skipped}. v8.1: split on
         // commas AND newlines; plain text (no leading '/') is also allowed
         // (non-empty, <=64 chars) and blocks that exact message text.
+        // v8.3: invalid entries are reported in `skipped` (see parseCustom).
         function parseBlocked(text) {
             var out = [];
+            var skipped = [];
             String(text || '').split(/[,\n]/).forEach(function (c) {
                 var cmd = c.trim().toLowerCase();
                 if (!cmd) return;
                 if (cmd.charAt(0) === '/') {
-                    if (!/^\/[a-z0-9_]{1,31}$/.test(cmd) || cmd.length > 32) return;
-                } else if (cmd.length > 64) return;
-                if (out.indexOf(cmd) === -1) out.push(cmd);
+                    if (cmd.indexOf(' ') !== -1) { skipped.push({ line: c.trim(), reason: 'স্পেস আছে' }); return; }
+                    if (!/^\/[a-z0-9_]{1,31}$/.test(cmd) || cmd.length > 32) { skipped.push({ line: c.trim(), reason: 'ভুল ফরম্যাট' }); return; }
+                } else if (cmd.length > 64) { skipped.push({ line: c.trim(), reason: '৬৪ অক্ষরের বেশি' }); return; }
+                if (out.indexOf(cmd) !== -1) { skipped.push({ line: c.trim(), reason: 'একই কমান্ড দুইবার' }); return; }
+                out.push(cmd);
             });
-            return out.slice(0, 20);
+            if (out.length > 20) {
+                out.slice(20).forEach(function (o) { skipped.push({ line: o, reason: '২০টির বেশি (সর্বোচ্চ ২০টি)' }); });
+                out = out.slice(0, 20);
+            }
+            return { list: out, skipped: skipped };
         }
         function formatCustom(list) {
             return (list || []).map(function (c) {
@@ -501,26 +538,60 @@ function mla_bots_admin_page() {
                 listEl.appendChild(tr);
             });
         }
+        // v8.3: fetch with a hard timeout — a hanging request (Render
+        // waking from sleep, a slow phone network) can NEVER stall the save
+        // flow forever. Promise.race is used (not AbortController) so it
+        // works on every mobile browser; the timed-out request is simply
+        // ignored once the timeout rejects.
+        function fetchWithTimeout(url, options, ms) {
+            var timeoutMs = ms || 15000;
+            var timer = null;
+            var timeoutPromise = new Promise(function (resolve, reject) {
+                timer = setTimeout(function () { reject(new Error('timeout')); }, timeoutMs);
+            });
+            return Promise.race([fetch(url, options), timeoutPromise]).then(function (r) {
+                clearTimeout(timer);
+                return r;
+            }, function (e) {
+                clearTimeout(timer);
+                throw e;
+            });
+        }
         // Push the current list to the Render server (secret-protected).
         // Returns a promise of true/false (whether the server accepted it).
-        // It does NOT set the final status — the caller (save/verify) does,
-        // so the user sees the verified result, not just "sent".
+        // v8.3: this ALWAYS leaves a clear result status now — success shows
+        // "✅ সার্ভারে পাঠানো হয়েছে", failure/timeout shows a red error.
+        // (Bug: it used to set "⏳ sending..." and never replace it, so the
+        // user stared at "sending..." forever even after a successful sync.)
+        // The save flow's verify step may still overwrite the status with
+        // the verified result afterwards — that is the final word.
         function syncToServer() {
             setStatus('⏳ সার্ভারে পাঠানো হচ্ছে...', true);
-            return fetch(RENDER_URL + '/api/admin/bots/sync', {
+            return fetchWithTimeout(RENDER_URL + '/api/admin/bots/sync', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ bots: bots, secret: SECRET })
-            }).then(function (r) { return r.json(); }).then(function (d) {
-                if (d && d.ok) { markSynced(); return true; }
+            }, 15000).then(function (r) { return r.json(); }).then(function (d) {
+                if (d && d.ok) {
+                    markSynced();
+                    setStatus('✅ সার্ভারে পাঠানো হয়েছে — ' + bots.length + 'টি বট চালু আছে।', true);
+                    return true;
+                }
+                setStatus('❌ সার্ভারে পাঠানো যায়নি — নেটওয়ার্ক/সার্ভার সমস্যা, আবার চেষ্টা করুন।', false);
                 return false;
-            }).catch(function () { return false; });
+            }).catch(function () {
+                setStatus('❌ সার্ভারে পাঠানো যায়নি — নেটওয়ার্ক/সার্ভার সমস্যা, আবার চেষ্টা করুন।', false);
+                return false;
+            });
         }
         // v8.2: verify against the server that the saved bot's commands
         // really arrived — compare the actual arrays, not just the bot count.
         // `entry` is the cleaned bot entry from the WordPress save response.
+        // v8.3: 15s timeout (a hanging GET used to stall the save flow at
+        // "sending..." with no final message at all); a timeout lands in
+        // the 'unknown' branch, which still shows a clear result.
         function verifySaved(entry) {
-            return fetch(RENDER_URL + '/api/bots')
+            return fetchWithTimeout(RENDER_URL + '/api/bots', {}, 15000)
                 .then(function (r) { return r.json(); })
                 .then(function (d) {
                     var list = (d && d.ok && Array.isArray(d.bots)) ? d.bots : null;
@@ -541,11 +612,11 @@ function mla_bots_admin_page() {
                     if (state === 'ok') {
                         var nc = (entry.custom_commands || []).length;
                         var nb = (entry.blocked_commands || []).length;
-                        setStatus('✅ সেভ হয়েছে — সার্ভারে যাচাই হয়েছে (কাস্টম ' + nc + 'টি, বন্ধ ' + nb + 'টি)।', true);
+                        finalStatus('✅ সেভ হয়েছে — সার্ভারে যাচাই হয়েছে (কাস্টম ' + nc + 'টি, বন্ধ ' + nb + 'টি)।', true);
                     } else if (state === 'mismatch' || state === 'missing') {
-                        setStatus('⚠️ ওয়ার্ডপ্রেসে সেভ হয়েছে কিন্তু সার্ভারে পাওয়া যায়নি — নিচের Sync বোতাম চাপুন।', false);
+                        finalStatus('⚠️ ওয়ার্ডপ্রেসে সেভ হয়েছে কিন্তু সার্ভারে পাওয়া যায়নি — নিচের Sync বোতাম চাপুন।', false);
                     } else {
-                        setStatus('⚠️ সেভ হয়েছে, কিন্তু সার্ভার যাচাই করা যায়নি — নিচের Sync বোতাম চাপুন।', false);
+                        finalStatus('⚠️ সেভ হয়েছে, কিন্তু সার্ভার যাচাই করা যায়নি — নিচের Sync বোতাম চাপুন।', false);
                     }
                 });
         }
@@ -594,13 +665,13 @@ function mla_bots_admin_page() {
                             if (!saved) saved = { username: verifyUsername || '', custom_commands: [], blocked_commands: [] };
                             return syncToServer().then(function (ok) {
                                 if (!ok) {
-                                    setStatus('⚠️ ওয়ার্ডপ্রেসে সেভ হয়েছে কিন্তু সার্ভারে পাঠানো যায়নি — নিচের Sync বোতাম চাপুন।', false);
+                                    finalStatus('⚠️ ওয়ার্ডপ্রেসে সেভ হয়েছে কিন্তু সার্ভারে পাঠানো যায়নি — নিচের Sync বোতাম চাপুন।', false);
                                     return;
                                 }
                                 // No bot to verify (e.g. a deletion — the bot
                                 // is supposed to be gone): plain success.
                                 if (!verifyUsername) {
-                                    setStatus('✅ সেভ হয়েছে — সার্ভারে ' + bots.length + 'টি বট চালু আছে।', true);
+                                    finalStatus('✅ সেভ হয়েছে — সার্ভারে ' + bots.length + 'টি বট চালু আছে।', true);
                                     return;
                                 }
                                 return verifySaved(saved);
@@ -629,6 +700,7 @@ function mla_bots_admin_page() {
             }
             function saveFailed(msg) {
                 setSaveBusy(false);
+                pendingSkipped = []; // nothing was saved — no skipped warning to show
                 // KEEP all form values — do not clear the form. The user can
                 // just press Save again.
                 setStatus(msg + ' আপনার লেখা ঘরেই আছে — আবার "সংরক্ষণ করুন" চাপুন।', false);
@@ -696,13 +768,19 @@ function mla_bots_admin_page() {
                 setStatus('❌ এই বটটি ইতিমধ্যে যুক্ত আছে — বদলাতে নিচের তালিকায় তার পাশের ✏️ সম্পাদনা চাপুন।', false);
                 return;
             }
+            // v8.3: parse returns {list, skipped} — remember the lines that
+            // could not be saved so the final status can name them AFTER the
+            // save (the save itself is never blocked; valid lines are saved).
+            var customRes = parseCustom(document.getElementById('mla-bot-custom').value);
+            var blockedRes = parseBlocked(document.getElementById('mla-bot-blocked').value);
+            pendingSkipped = customRes.skipped.concat(blockedRes.skipped);
             var entry = {
                 username: u,
                 name: document.getElementById('mla-bot-name').value.trim() || u,
                 description: document.getElementById('mla-bot-desc').value.trim(),
                 how_to_earn: document.getElementById('mla-bot-earn').value.trim(),
-                custom_commands: parseCustom(document.getElementById('mla-bot-custom').value),
-                blocked_commands: parseBlocked(document.getElementById('mla-bot-blocked').value)
+                custom_commands: customRes.list,
+                blocked_commands: blockedRes.list
             };
             // v8.2: build the list to send WITHOUT mutating `bots` and
             // WITHOUT clearing the form yet. Only a successful save clears
