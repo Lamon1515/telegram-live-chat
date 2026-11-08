@@ -50,27 +50,36 @@
   if (backBtn) backBtn.addEventListener('click', function () {
     picker.style.display = (picker.style.display === 'none') ? '' : 'none';
   });
-  // v9.4 (stability): fit the chat EXACTLY between the site's fixed top
+  // v9.5 (stability): fit the chat EXACTLY between the site's fixed top
   // header (#mla-topbar) and fixed bottom menu (#bottomNav), so the page
   // never scrolls and neither the header nor the menu ever moves/shakes.
-  // Heights are measured at runtime (the theme can change them) and
-  // re-measured on resize/orientationchange and shortly after load (the
-  // bottom menu can render late). ALL widths — desktop too (the previous build gated
-  // this to ≤640px, which left the composer below the fold on desktop).
-  // Desktop keeps the centred 560px card look; only the height is fitted.
-  // Missing chrome falls back to 0 for that side.
+  // v9.4 measured only the header+menu heights — but it did NOT account
+  // for the container's offset from the viewport top: the page-title area
+  // pushes the chat ~330px down, so the container extended ~330px past the
+  // viewport bottom and the composer was cut off. v9.5 measures the
+  // container's top offset (getBoundingClientRect().top) and subtracts
+  // that too: height = viewport height - topGap - bottomNavH. The header
+  // height is no longer needed (topGap already includes everything above
+  // the container). Re-measured on resize/orientationchange and shortly
+  // after load (the bottom menu can render late). ALL widths — desktop
+  // too. Desktop keeps the centred 560px card look; only the height is
+  // fitted. Missing chrome falls back to 0 for that side.
   function fitChat() {
     var page = document.getElementById('mla-bot-page');
     if (!page) return;
-    var topH = 0, botH = 0;
-    var topEl = document.getElementById('mla-topbar');
+    var botH = 0;
     var botEl = document.getElementById('bottomNav');
-    if (topEl) topH = topEl.offsetHeight || 0;
     if (botEl) botH = botEl.offsetHeight || 0;
-    var total = topH + botH;
-    // vh fallback first (older browsers ignore the dvh line after it).
-    page.style.height = 'calc(100vh - ' + total + 'px)';
-    page.style.height = 'calc(100dvh - ' + total + 'px)';
+    var topGap = 0;
+    try { topGap = page.getBoundingClientRect().top || 0; } catch (e) { topGap = 0; }
+    if (topGap < 0) topGap = 0;
+    var h = window.innerHeight - topGap - botH;
+    if (h < 200) h = 200;
+    // vh fallback first (older browsers ignore the px line after it);
+    // the px value is the 100dvh equivalent (innerHeight tracks the
+    // dynamic viewport, like dvh does).
+    page.style.height = 'calc(100vh - ' + (topGap + botH) + 'px)';
+    page.style.height = h + 'px';
   }
   // v9.4: hide the floating "Spin Now" wheel button on this page — it is a
   // fixed floating button that would overlap the full-screen chat. It has
@@ -92,6 +101,33 @@
           el.style.display = 'none';
           return;
         }
+      }
+    } catch (e) {}
+  }
+  // v9.5: hide the redundant page title ("MLA Bot" <h1>) on this page —
+  // the chat already has its own "MLA Bot" header, and the title area
+  // leaves a ~330px white gap that pushes the composer below the fold.
+  // This is NOT the site header/menu (those stay visible — the user's
+  // words: "হেডার মেনু লুকাবে কেন?"). Finds the page's <h1> (there is
+  // only one, its text is "MLA Bot") and hides it, plus the nearest block
+  // parent that contains only the title (so the wrapper's padding/margin
+  // gap goes away too). Runs at init, on load, and at 500ms/1500ms (same
+  // as hideSpinButton) in case the title renders late.
+  function hidePageTitle() {
+    try {
+      var hs = document.querySelectorAll('h1');
+      for (var i = 0; i < hs.length; i++) {
+        var h = hs[i];
+        if (!/mla\s*bot/i.test(h.textContent || '')) continue;
+        h.style.display = 'none';
+        var node = h.parentElement;
+        for (var d = 0; d < 3 && node; d++) {
+          var txt = (node.textContent || '').replace(/\s+/g, ' ').trim();
+          var htxt = (h.textContent || '').replace(/\s+/g, ' ').trim();
+          if (txt && txt === htxt) { node.style.display = 'none'; break; }
+          node = node.parentElement;
+        }
+        return;
       }
     } catch (e) {}
   }
@@ -353,7 +389,7 @@
     if (b) {
       titleEl.textContent = b.name || b.username;
       avatarEl.textContent = avatarInitial(b);
-      subEl.textContent = '@' + b.username + ' • online • v9.4';
+      subEl.textContent = '@' + b.username + ' • online • v9.5';
       subEl.style.color = '#0088cc';
       addSys('এখন ' + (b.name || b.username) + ' (@' + b.username + ') এর সাথে চ্যাট করছেন। /start পাঠান।');
     }
@@ -426,7 +462,7 @@
             if (b) {
               titleEl.textContent = b.name || b.username;
               avatarEl.textContent = avatarInitial(b);
-              subEl.textContent = '@' + b.username + ' • online • v9.4';
+              subEl.textContent = '@' + b.username + ' • online • v9.5';
               subEl.style.color = '#0088cc';
             }
             fetchCommands(selectedBot);
@@ -487,16 +523,18 @@
     input.value = '';
     send(text);
   });
-  // v9.4: fit the chat between the fixed header + bottom menu, and hide the
-  // floating Spin Now button. Re-fit on resize/orientationchange and again
-  // shortly after load (the bottom menu can render late, after this script).
+  // v9.5: fit the chat between the fixed header + bottom menu, hide the
+  // floating Spin Now button, and hide the redundant page title. Re-fit
+  // on resize/orientationchange and again shortly after load (the bottom
+  // menu and the title can render late, after this script).
   fitChat();
   hideSpinButton();
+  hidePageTitle();
   window.addEventListener('resize', fitChat);
   window.addEventListener('orientationchange', fitChat);
-  window.addEventListener('load', function () { fitChat(); hideSpinButton(); });
-  setTimeout(function () { fitChat(); hideSpinButton(); }, 500);
-  setTimeout(function () { fitChat(); hideSpinButton(); }, 1500);
+  window.addEventListener('load', function () { fitChat(); hideSpinButton(); hidePageTitle(); });
+  setTimeout(function () { fitChat(); hideSpinButton(); hidePageTitle(); }, 500);
+  setTimeout(function () { fitChat(); hideSpinButton(); hidePageTitle(); }, 1500);
   if (sessionId) loadHistory();
   fetchBots();
   connect();
